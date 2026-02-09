@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,31 +8,37 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
-import {Feather} from '@react-native-vector-icons/feather';
+import { Feather } from '@react-native-vector-icons/feather';
 import LinearGradient from 'react-native-linear-gradient';
-import {Colors} from '../utils/colors';
-import {Button} from '../components/common/Button';
-import {Loader} from '../components/common/Loader';
-import {ValidatorApi} from '../api/validatorApi';
+import { Colors } from '../utils/colors';
+import { Button } from '../components/common/Button';
+import { Loader } from '../components/common/Loader';
+import { ValidatorApi } from '../api/validatorApi';
 import {
   getPendingEvents,
   markEventsSynced,
   getQueueCount,
 } from '../services/offlineQueue';
-import {useTripStore} from '../store/tripStore';
-import {format} from 'date-fns';
+import { useTripStore } from '../store/tripStore';
+import { format } from 'date-fns';
+import { useAlert } from '../contexts/AlertContext';
+import { useDeviceStore } from '../store/deviceStore';
 
 interface SyncScreenProps {
   navigation: any;
 }
 
-export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
+export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
   const [loading, setLoading] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [syncResults, setSyncResults] = useState<any>(null);
-  const currentTrip = useTripStore((state:any) => state.currentTrip);
-  const api = new ValidatorApi('https://api.trofice.com');
+  const currentTrip = useTripStore((state: any) => state.currentTrip);
+  const api = new ValidatorApi('https://trofice.com/api/validator');
+  const bootstrapData = useDeviceStore(state => state.bootstrapData);
+  const recommendedInterval =
+    bootstrapData?.sync.recommendedIntervalSeconds || 60;
+  const { showAlert } = useAlert();
 
   useEffect(() => {
     loadPendingCount();
@@ -45,12 +51,20 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
 
   const handleSync = async () => {
     if (!currentTrip) {
-      Alert.alert('Error', 'No active trip selected');
+      showAlert({
+        title: 'Error',
+        message: 'No active trip selected',
+        type: 'error',
+      });
       return;
     }
 
     if (pendingCount === 0) {
-      Alert.alert('Info', 'No pending events to sync');
+      showAlert({
+        title: 'Info',
+        message: 'No pending events to sync',
+        type: 'info',
+      });
       return;
     }
 
@@ -59,7 +73,6 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
 
     try {
       const pending = await getPendingEvents();
-
       const result = await api.syncEvents({
         tripId: currentTrip.trip.tripId,
         manifestVersion: currentTrip.manifestVersion,
@@ -67,19 +80,20 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
       });
 
       if (!result.success) {
-        Alert.alert('Sync Failed', result.message);
+        showAlert({
+          title: 'Sync Failed',
+          message: result.message,
+          type: 'error',
+        });
         return;
       }
 
-      // Mark accepted and duplicate events as synced
       const syncedIds = result.data.results
         .filter(r => r.accepted || r.duplicate)
         .map(r => r.eventId!)
         .filter(Boolean);
 
       await markEventsSynced(syncedIds);
-
-      // Update counts
       await loadPendingCount();
       setLastSync(new Date());
       setSyncResults(result.data);
@@ -89,21 +103,34 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
       );
 
       if (rejected.length === 0) {
-        Alert.alert(
-          'Success',
-          `Successfully synced ${result.data.processed} events!`,
-        );
+        showAlert({
+          title: 'Success',
+          message: `Successfully synced ${result.data.processed} events!`,
+          type: 'success',
+        });
       } else {
-        Alert.alert(
-          'Partially Synced',
-          `${syncedIds.length} events synced, ${rejected.length} rejected. Check results for details.`,
-        );
+        showAlert({
+          title: 'Partially Synced',
+          message: `${syncedIds.length} events synced, ${rejected.length} rejected. Check results for details.`,
+          type: 'warning',
+        });
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to sync events');
+      showAlert({
+        title: 'Error',
+        message: error.message || 'Failed to sync events',
+        type: 'error',
+      });
     } finally {
       setLoading(false);
     }
+  };
+
+  // ✅ Helper function to truncate long strings
+  const truncateString = (str: string, maxLength: number = 20): string => {
+    if (!str) return 'N/A';
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength) + '...';
   };
 
   return (
@@ -114,11 +141,15 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => navigation.goBack()}>
+          onPress={() => navigation.goBack()}
+        >
           <Feather name="arrow-left" size={24} color={Colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Sync Data</Text>
-        <TouchableOpacity style={styles.refreshButton} onPress={loadPendingCount}>
+        <TouchableOpacity
+          style={styles.refreshButton}
+          onPress={loadPendingCount}
+        >
           <Feather name="refresh-cw" size={24} color={Colors.primary} />
         </TouchableOpacity>
       </View>
@@ -127,7 +158,8 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
         {/* Status Card */}
         <LinearGradient
           colors={[Colors.primary, Colors.primaryDark]}
-          style={styles.statusCard}>
+          style={styles.statusCard}
+        >
           <View style={styles.statusContent}>
             <View style={styles.iconBadge}>
               <Feather name="database" size={32} color={Colors.textPrimary} />
@@ -155,20 +187,41 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Trip ID</Text>
                 <Text style={styles.infoValue}>
-                  {currentTrip.trip.tripId}
+                  {truncateString(currentTrip.trip.tripId, 15)}{' '}
+                  {/* ✅ Truncated */}
                 </Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Route</Text>
                 <Text style={styles.infoValue}>
-                  {currentTrip.trip.routeId}
+                  {truncateString(currentTrip.trip.routeId, 15)}{' '}
+                  {/* ✅ Truncated */}
                 </Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Manifest Version</Text>
-                <Text style={styles.infoValue}>
-                  {currentTrip.manifestVersion}
-                </Text>
+                {/* ✅ Make version touchable to show full value */}
+                <TouchableOpacity
+                  onPress={() => {
+                    showAlert({
+                      title: 'Manifest Version',
+                      message: currentTrip.manifestVersion,
+                      type: 'info',
+                    });
+                  }}
+                >
+                  <View style={styles.versionContainer}>
+                    <Text style={styles.infoValue}>
+                      {truncateString(currentTrip.manifestVersion, 12)}{' '}
+                      {/* ✅ Truncated */}
+                    </Text>
+                    <Feather
+                      name="info"
+                      size={14}
+                      color={Colors.textSecondary}
+                    />
+                  </View>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -188,20 +241,19 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
                 <Text style={styles.resultLabel}>Processed</Text>
               </View>
               <View style={styles.resultStat}>
-                <Text
-                  style={[styles.resultNumber, {color: Colors.success}]}>
+                <Text style={[styles.resultNumber, { color: Colors.success }]}>
                   {syncResults.results.filter((r: any) => r.accepted).length}
                 </Text>
                 <Text style={styles.resultLabel}>Accepted</Text>
               </View>
               <View style={styles.resultStat}>
-                <Text style={[styles.resultNumber, {color: Colors.warning}]}>
+                <Text style={[styles.resultNumber, { color: Colors.warning }]}>
                   {syncResults.results.filter((r: any) => r.duplicate).length}
                 </Text>
                 <Text style={styles.resultLabel}>Duplicates</Text>
               </View>
               <View style={styles.resultStat}>
-                <Text style={[styles.resultNumber, {color: Colors.error}]}>
+                <Text style={[styles.resultNumber, { color: Colors.error }]}>
                   {
                     syncResults.results.filter(
                       (r: any) => !r.accepted && !r.duplicate,
@@ -224,7 +276,8 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
                     !result.accepted &&
                       !result.duplicate &&
                       styles.resultRejected,
-                  ]}>
+                  ]}
+                >
                   <Feather
                     name={
                       result.accepted
@@ -264,10 +317,11 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
           <View style={styles.instructionsContent}>
             <Text style={styles.instructionsTitle}>About Sync</Text>
             <Text style={styles.instructionsText}>
-              • Events are queued locally and synced when online{'\n'}
-              • Accepted events are permanently recorded{'\n'}
-              • Duplicates are ignored automatically{'\n'}
-              • Rejected events remain in queue for review
+              • Events are queued locally and synced when online{'\n'}•
+              Recommended sync interval: {recommendedInterval} seconds{'\n'}•
+              Accepted events are permanently recorded{'\n'}• Duplicates are
+              ignored automatically{'\n'}• Rejected events remain in queue for
+              review
             </Text>
           </View>
         </View>
@@ -276,15 +330,15 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({navigation}) => {
       {/* Sync Button */}
       <View style={styles.footer}>
         <Button
-          title={pendingCount > 0 ? `Sync ${pendingCount} Events` : 'No Events to Sync'}
+          title={
+            pendingCount > 0
+              ? `Sync ${pendingCount} Events`
+              : 'No Events to Sync'
+          }
           onPress={handleSync}
           disabled={pendingCount === 0 || !currentTrip}
           icon={
-            <Feather
-              name="upload-cloud"
-              size={20}
-              color={Colors.textPrimary}
-            />
+            <Feather name="upload-cloud" size={20} color={Colors.textPrimary} />
           }
         />
       </View>
@@ -476,5 +530,10 @@ const styles = StyleSheet.create({
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
+  },
+  versionContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
 });

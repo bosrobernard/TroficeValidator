@@ -9,10 +9,15 @@ import {SyncScreen} from '../screens/SyncScreen';
 
 const Stack = createNativeStackNavigator();
 
-export const AppNavigator = () => {
+interface AppNavigatorProps {
+  initialRoute: string; // ✅ Add this
+}
+
+export const AppNavigator: React.FC<AppNavigatorProps> = ({initialRoute}) => { // ✅ Accept prop
   return (
     <NavigationContainer>
       <Stack.Navigator
+        initialRouteName={initialRoute} // ✅ Use it
         screenOptions={{
           headerShown: false,
           animation: 'slide_from_right',

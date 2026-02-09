@@ -101,6 +101,66 @@ export async function saveTripPack(
   }
 }
 
+// ✅ Add this function to help debug
+export async function getAllManifestForTrip(
+  tripId: string,
+): Promise<any[] | null> {
+  try {
+    const [results] = await db.executeSql(
+      `SELECT * FROM manifest WHERE tripId = ?`,
+      [tripId],
+    );
+
+    const passengers = [];
+    for (let i = 0; i < results.rows.length; i++) {
+      const row = results.rows.item(i);
+      passengers.push({
+        memberId: row.memberId,
+        customerId: row.customerId,
+        uniqueCodeHash: row.uniqueCodeHash,
+        active: row.active === 1,
+        canBoard: row.canBoard === 1,
+        reason: row.reason,
+        isPAYG: row.isPAYG === 1,
+        spendable: row.spendable,
+      });
+    }
+
+    console.log(`📊 Found ${passengers.length} passengers in database for trip ${tripId}`);
+    return passengers;
+  } catch (error) {
+    console.error('Error getting all manifest:', error);
+    return null;
+  }
+}
+
+// ✅ Also add a debug function to check database contents
+export async function debugDatabaseContents(): Promise<void> {
+  try {
+    // Check trips table
+    const [tripResults] = await db.executeSql('SELECT * FROM trips');
+    console.log('🗄️ Trips in database:', tripResults.rows.length);
+    for (let i = 0; i < tripResults.rows.length; i++) {
+      const trip = tripResults.rows.item(i);
+      console.log(`   Trip ${i + 1}: ${trip.tripId}`);
+    }
+
+    // Check manifest table
+    const [manifestResults] = await db.executeSql('SELECT * FROM manifest');
+    console.log('🗄️ Manifest entries in database:', manifestResults.rows.length);
+    for (let i = 0; i < manifestResults.rows.length; i++) {
+      const entry = manifestResults.rows.item(i);
+      console.log(`   Entry ${i + 1}:`, {
+        tripId: entry.tripId,
+        memberId: entry.memberId,
+        hash: entry.uniqueCodeHash?.substring(0, 16) + '...',
+      });
+    }
+  } catch (error) {
+    console.error('Error debugging database:', error);
+  }
+}
+
 export async function lookupPassenger(
   tripId: string,
   uniqueCodeHash: string,

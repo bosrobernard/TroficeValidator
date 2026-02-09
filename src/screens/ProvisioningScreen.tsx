@@ -1,36 +1,44 @@
 import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import {
-  View,
-  Text,
-  StyleSheet,
-  SafeAreaView,
-  Alert,
-} from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from 'react-native-vision-camera';
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useCodeScanner,
+} from 'react-native-vision-camera';
 import { Button } from '../components/common/Button';
 import { Loader } from '../components/common/Loader';
 import { Colors } from '../utils/colors';
 import { saveProvisioning } from '../services/deviceStorage';
 import { Feather } from '@react-native-vector-icons/feather';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAlert } from '../contexts/AlertContext';
 
 interface ProvisioningScreenProps {
-  onProvisioned: () => void;
+  navigation: any; // Changed from onProvisioned callback
 }
 
 export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
-  onProvisioned,
+  navigation, // Use navigation instead of callback
 }) => {
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [processingQR, setProcessingQR] = useState(false);
+  const [downloadingBarcode, setDownloadingBarcode] = useState(false);
+  const { showAlert } = useAlert();
 
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
 
   const codeScanner = useCodeScanner({
     codeTypes: ['qr'],
-    onCodeScanned: (codes) => {
-      if (codes.length > 0 && !processingQR && !loading) {
+    onCodeScanned: codes => {
+      if (
+        codes.length > 0 &&
+        !processingQR &&
+        !loading &&
+        !downloadingBarcode
+      ) {
         const code = codes[0];
         if (code.value) {
           handleQRCodeScanned(code.value);
@@ -45,6 +53,39 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
     }
   }, []);
 
+  // Auto-retry after barcode download
+  useEffect(() => {
+    if (downloadingBarcode) {
+      const timer = setTimeout(() => {
+        setDownloadingBarcode(false);
+        setScanning(true);
+      }, 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [downloadingBarcode]);
+
+  const handleCameraError = (error: any) => {
+    console.log('Camera error:', error);
+
+    const errorMessage = error?.message || String(error);
+
+    if (
+      errorMessage.toLowerCase().includes('barcode') &&
+      errorMessage.toLowerCase().includes('download')
+    ) {
+      setDownloadingBarcode(true);
+      setScanning(false);
+    } else {
+      Alert.alert('Camera Error', errorMessage, [
+        {
+          text: 'Retry',
+          onPress: () => setScanning(true),
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+
   const handleQRCodeScanned = async (data: string) => {
     if (!data || loading || processingQR) return;
 
@@ -52,8 +93,10 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
       setProcessingQR(true);
       setLoading(true);
       setScanning(false);
-
+      
+      console.log('QR code scanned:', data);
       const provisioning = JSON.parse(data);
+      console.log('Parsed provisioning data:', provisioning);
 
       if (!provisioning?.deviceId || !provisioning?.deviceKey) {
         throw new Error('Invalid provisioning QR code');
@@ -65,13 +108,34 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
         apiBase: provisioning.apiBase,
       });
 
-      Alert.alert('Success', 'Device provisioned successfully!', [
-        { text: 'OK', onPress: onProvisioned },
-      ]);
+      // ✅ Replace Alert.alert with showAlert
+      showAlert({
+        title: 'Success',
+        message: 'Device provisioned successfully!',
+        type: 'success',
+        buttons: [
+          {
+            text: 'OK',
+            onPress: () => navigation.replace('Dashboard'),
+          },
+        ],
+      });
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Invalid QR code');
-      setScanning(true);
-      setProcessingQR(false);
+      // ✅ Replace Alert.alert with showAlert
+      showAlert({
+        title: 'Error',
+        message: error.message || 'Invalid QR code',
+        type: 'error',
+        buttons: [
+          {
+            text: 'Try Again',
+            onPress: () => {
+              setScanning(true);
+              setProcessingQR(false);
+            },
+          },
+        ],
+      });
     } finally {
       setLoading(false);
       setTimeout(() => {
@@ -132,13 +196,27 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
         </Text>
       </View>
 
-      {scanning ? (
+      {/* Barcode Download Indicator */}
+      {downloadingBarcode && (
+        <View style={styles.downloadContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.downloadTitle}>Setting Up Scanner...</Text>
+          <Text style={styles.downloadText}>
+            Downloading barcode scanner module.{'\n'}
+            This only happens once.{'\n'}
+            Please wait...
+          </Text>
+        </View>
+      )}
+
+      {scanning && !downloadingBarcode ? (
         <View style={styles.cameraContainer}>
           <Camera
             style={StyleSheet.absoluteFill}
             device={device}
-            isActive={scanning}
+            isActive={scanning && !downloadingBarcode}
             codeScanner={codeScanner}
+            onError={handleCameraError}
           />
           <View style={styles.scanOverlay}>
             <View style={styles.scanFrame}>
@@ -155,7 +233,7 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
             </View>
           </View>
         </View>
-      ) : (
+      ) : !downloadingBarcode ? (
         <View style={styles.instructionsCard}>
           <Feather name="info" size={24} color={Colors.info} />
           <Text style={styles.instructionsTitle}>How to provision:</Text>
@@ -167,22 +245,24 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
             5. Scan the displayed QR code
           </Text>
         </View>
-      )}
+      ) : null}
 
-      <View style={styles.footer}>
-        <Button
-          title={scanning ? 'Cancel Scan' : 'Start Scanning'}
-          onPress={() => setScanning(!scanning)}
-          variant={scanning ? 'secondary' : 'primary'}
-          icon={
-            <Feather
-              name={scanning ? 'x' : 'camera'}
-              size={20}
-              color={Colors.textPrimary}
-            />
-          }
-        />
-      </View>
+      {!downloadingBarcode && (
+        <View style={styles.footer}>
+          <Button
+            title={scanning ? 'Cancel Scan' : 'Start Scanning'}
+            onPress={() => setScanning(!scanning)}
+            variant={scanning ? 'secondary' : 'primary'}
+            icon={
+              <Feather
+                name={scanning ? 'x' : 'camera'}
+                size={20}
+                color={Colors.textPrimary}
+              />
+            }
+          />
+        </View>
+      )}
     </SafeAreaView>
   );
 };
@@ -321,5 +401,30 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 16,
     marginBottom: 8,
+  },
+  downloadContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+    margin: 16,
+    backgroundColor: Colors.surface,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: Colors.primary,
+    borderStyle: 'dashed',
+  },
+  downloadTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: Colors.textPrimary,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  downloadText: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 22,
   },
 });

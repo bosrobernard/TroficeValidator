@@ -20,6 +20,20 @@ export interface BootstrapResponse {
   };
 }
 
+export interface CurrentTripResponse {
+  _id: string;
+  batchId: any;
+  routeId: any;
+  date: string;
+  onTrip: boolean;
+  tripType: string;
+  timeStarted: string;
+  coordinates: any[];
+  createdAt: string;
+  updatedAt: string;
+  __v: number;
+}
+
 export interface TripPackResponse {
   manifestVersion: string;
   trip: {

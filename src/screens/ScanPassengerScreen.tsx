@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,16 +7,20 @@ import {
   Alert,
   Vibration,
 } from 'react-native';
-import {Feather} from '@react-native-vector-icons/feather';
-import {Colors} from '../utils/colors';
-import {TripHeader} from '../components/TripHeader';
-import {ScannerView} from '../components/ScannerView';
-import {Card, CardSection} from '../components/common/Card';
-import {useTripStore} from '../store/tripStore';
-import {lookupPassenger} from '../services/sqliteService';
-import {enqueueEvent} from '../services/offlineQueue';
-import {v4 as uuidv4} from 'uuid';
+import { Feather } from '@react-native-vector-icons/feather';
+import { Colors } from '../utils/colors';
+import { TripHeader } from '../components/TripHeader';
+import { ScannerView } from '../components/ScannerView';
+import { Card, CardSection } from '../components/common/Card';
+import { useTripStore } from '../store/tripStore';
+import {
+  getAllManifestForTrip,
+  lookupPassenger,
+} from '../services/sqliteService';
+import { enqueueEvent } from '../services/offlineQueue';
+import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto-js';
+import { useAlert } from '../contexts/AlertContext';
 
 interface ScanPassengerScreenProps {
   navigation: any;
@@ -28,44 +32,85 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
   navigation,
 }) => {
   const [scanMode, setScanMode] = useState<ScanMode>('nfc');
-  const currentTrip = useTripStore((state:any) => state.currentTrip);
-  const incrementScanned = useTripStore((state:any) => state.incrementScanned);
-  const {scannedCount, onboardCount, absentCount} = useTripStore();
+  const currentTrip = useTripStore((state: any) => state.currentTrip);
+  const incrementScanned = useTripStore((state: any) => state.incrementScanned);
+  const { scannedCount, onboardCount, absentCount } = useTripStore();
+  const { showAlert } = useAlert();
 
   const hashCode = (code: string): string => {
-    return crypto.SHA256(code).toString();
+    return CryptoJS.SHA256(CryptoJS.enc.Utf8.parse(code.trim())).toString();
   };
 
   const processPassenger = async (code: string) => {
     if (!currentTrip) {
-      Alert.alert('Error', 'No active trip selected');
+      showAlert({
+        title: 'Error',
+        message: 'No active trip selected',
+        type: 'error',
+      });
       return;
     }
 
+    // ✅ DEBUG: Log the raw scanned code
+    console.log('═══════════════════════════════');
+    console.log('📱 Raw scanned code:', code);
+    console.log('📱 Code length:', code.length);
+    console.log('📱 Code type:', typeof code);
+
+    // ✅ DEBUG: Log current trip ID
+    console.log('🎫 Current trip ID:', currentTrip.trip.tripId);
+
+    // Hash the code
     const codeHash = hashCode(code);
-    const passenger = await lookupPassenger(
-      currentTrip.trip.tripId,
-      codeHash,
-    );
+    console.log('🔐 Generated hash:', codeHash);
+    console.log('🔐 Hash length:', codeHash.length);
+
+    // ✅ DEBUG: Check what's in the database
+    // const allPassengers = await getAllManifestForTrip(currentTrip.trip.tripId);
+    // console.log('📋 Total passengers in manifest:', allPassengers?.length || 0);
+    // if (allPassengers && allPassengers.length > 0) {
+    //   console.log('📋 First passenger hash:', allPassengers[0].uniqueCodeHash);
+    //   console.log('📋 All hashes in manifest:');
+    //   allPassengers.forEach((p: any, i: number) => {
+    //     console.log(`   ${i + 1}. ${p.uniqueCodeHash}`);
+    //   });
+    // }
+
+    // Look up passenger
+    const passenger = await lookupPassenger(currentTrip.trip.tripId, codeHash);
+    console.log('🔍 Lookup result:', passenger);
+    console.log('═══════════════════════════════');
 
     if (!passenger) {
       Vibration.vibrate([0, 200, 100, 200]);
-      Alert.alert('Not Found', 'Passenger not in manifest for this trip');
+      showAlert({
+        title: 'Not Found',
+        message: `Passenger not in manifest for this trip\n\nScanned: ${code}\nHash: ${codeHash.substring(
+          0,
+          16,
+        )}...`,
+        type: 'error',
+      });
       return;
     }
 
     if (!passenger.active) {
       Vibration.vibrate([0, 200, 100, 200]);
-      Alert.alert('Inactive', 'Passenger membership is inactive');
+      showAlert({
+        title: 'Inactive',
+        message: 'Passenger membership is inactive',
+        type: 'warning',
+      });
       return;
     }
 
     if (!passenger.canBoard) {
       Vibration.vibrate([0, 200, 100, 200]);
-      Alert.alert(
-        'Cannot Board',
-        passenger.reason || 'Passenger cannot board this trip',
-      );
+      showAlert({
+        title: 'Cannot Board',
+        message: passenger.reason || 'Passenger cannot board this trip',
+        type: 'error',
+      });
       return;
     }
 
@@ -82,14 +127,16 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
     incrementScanned('onboard');
     Vibration.vibrate(100);
 
-    Alert.alert(
-      'Success ✓',
-      `Passenger boarded successfully${
+    // ✅ Success alert
+    showAlert({
+      title: 'Success ✓',
+      message: `Passenger boarded successfully${
         passenger.isPAYG
           ? `\n\nRemaining balance: GHS ${passenger.spendable?.toFixed(2)}`
           : ''
       }`,
-    );
+      type: 'success',
+    });
   };
 
   if (!currentTrip) {
@@ -131,10 +178,11 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
         </Card>
 
         <Card
-          style={[styles.statCard, {borderColor: Colors.success}]}
-          variant="outlined">
+          style={[styles.statCard, { borderColor: Colors.success }]}
+          variant="outlined"
+        >
           <CardSection style={styles.statContent}>
-            <Text style={[styles.statNumber, {color: Colors.success}]}>
+            <Text style={[styles.statNumber, { color: Colors.success }]}>
               {onboardCount}
             </Text>
             <Text style={styles.statLabel}>Onboard</Text>
@@ -142,10 +190,11 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
         </Card>
 
         <Card
-          style={[styles.statCard, {borderColor: Colors.error}]}
-          variant="outlined">
+          style={[styles.statCard, { borderColor: Colors.error }]}
+          variant="outlined"
+        >
           <CardSection style={styles.statContent}>
-            <Text style={[styles.statNumber, {color: Colors.error}]}>
+            <Text style={[styles.statNumber, { color: Colors.error }]}>
               {absentCount}
             </Text>
             <Text style={styles.statLabel}>Absent</Text>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,12 @@ import {
   Animated,
   Platform,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission, useCodeScanner } from 'react-native-vision-camera';
+import {
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useCodeScanner,
+} from 'react-native-vision-camera';
 import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
 import { Feather } from '@react-native-vector-icons/feather';
 import { Colors } from '../utils/colors';
@@ -31,15 +36,17 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   const [scanning, setScanning] = useState(false);
   const [nfcSupported, setNfcSupported] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
-  const pulseAnim = useState(new Animated.Value(1))[0];
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const pulseAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
+  const isInitializingNfc = useRef(false); // ✅ Track NFC initialization
 
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
 
   const codeScanner = useCodeScanner({
     codeTypes: ['qr'],
-    onCodeScanned: (codes) => {
-      if (codes.length > 0 && !isScanning && enabled) {
+    onCodeScanned: codes => {
+      if (codes.length > 0 && !isScanning && enabled && mode === 'qr') {
         const code = codes[0];
         if (code.value) {
           handleQrScan(code.value);
@@ -53,31 +60,106 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     if (mode === 'qr' && !hasPermission) {
       requestPermission();
     }
-    return () => {
-      NfcManager.cancelTechnologyRequest().catch(() => {});
-    };
-  }, [mode]);
 
+    // Cleanup on unmount
+    return () => {
+      stopPulseAnimation();
+      cleanupNfc();
+    };
+  }, []);
+
+  // ✅ Handle mode switching with proper async cleanup
+  useEffect(() => {
+    const handleModeChange = async () => {
+      console.log('🔄 Mode changed to:', mode);
+      
+      // Stop any ongoing scans
+      setScanning(false);
+      setIsScanning(false);
+      
+      // Stop animation
+      stopPulseAnimation();
+      
+      if (mode === 'nfc' && nfcSupported) {
+        // Switch to NFC mode
+        await reinitializeNfc();
+      } else {
+        // Switch away from NFC mode
+        await cleanupNfc();
+      }
+    };
+
+    handleModeChange();
+  }, [mode, nfcSupported]);
+
+  // Handle NFC scanning state
   useEffect(() => {
     if (scanning && mode === 'nfc') {
       startPulseAnimation();
+    } else {
+      stopPulseAnimation();
     }
-  }, [scanning]);
+  }, [scanning, mode]);
 
   const checkNfcSupport = async () => {
     try {
       const supported = await NfcManager.isSupported();
+      console.log('📱 NFC supported:', supported);
       setNfcSupported(supported);
       if (supported) {
         await NfcManager.start();
+        console.log('✅ NFC Manager started');
       }
     } catch (error) {
-      console.log('NFC check error:', error);
+      console.log('❌ NFC check error:', error);
+      setNfcSupported(false);
+    }
+  };
+
+  // ✅ Cleanup NFC properly
+  const cleanupNfc = async () => {
+    try {
+      console.log('🧹 Cleaning up NFC...');
+      await NfcManager.cancelTechnologyRequest();
+      console.log('✅ NFC cleanup complete');
+    } catch (error) {
+      console.log('⚠️ NFC cleanup error (safe to ignore):', error);
+    }
+  };
+
+  // ✅ Reinitialize NFC when switching back
+  const reinitializeNfc = async () => {
+    if (isInitializingNfc.current) {
+      console.log('⏳ NFC initialization already in progress...');
+      return;
+    }
+
+    try {
+      isInitializingNfc.current = true;
+      console.log('🔄 Reinitializing NFC...');
+      
+      // First, cancel any existing requests
+      await cleanupNfc();
+      
+      // Small delay to ensure cleanup completes
+      await new Promise<void>(resolve => setTimeout(() => resolve(), 100));
+      
+      // Restart NFC manager
+      await NfcManager.start();
+      console.log('✅ NFC reinitialized and ready');
+    } catch (error) {
+      console.log('❌ NFC reinitialization error:', error);
+    } finally {
+      isInitializingNfc.current = false;
     }
   };
 
   const startPulseAnimation = () => {
-    Animated.loop(
+    // Stop any existing animation
+    stopPulseAnimation();
+
+    // Create new animation
+    pulseAnimationRef.current = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1.2,
@@ -90,39 +172,80 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           useNativeDriver: true,
         }),
       ]),
-    ).start();
+    );
+
+    pulseAnimationRef.current.start();
+  };
+
+  const stopPulseAnimation = () => {
+    if (pulseAnimationRef.current) {
+      pulseAnimationRef.current.stop();
+      pulseAnimationRef.current = null;
+    }
+    pulseAnim.setValue(1); // Reset to default scale
   };
 
   const handleNfcScan = async () => {
-    if (!enabled || scanning) return;
+    if (!enabled || mode !== 'nfc') return;
+
+    // If already scanning, this is a cancel action
+    if (scanning) {
+      console.log('❌ Cancelling NFC scan');
+      setScanning(false);
+      stopPulseAnimation();
+      await cleanupNfc();
+      return;
+    }
 
     try {
+      console.log('🔵 Starting NFC scan');
       setScanning(true);
-      await NfcManager.requestTechnology(NfcTech.Ndef);
+      
+      await NfcManager.requestTechnology(NfcTech.Ndef, {
+        alertMessage: 'Ready to scan NFC card',
+      });
 
       const tag = await NfcManager.getTag();
+      console.log('📱 NFC tag detected:', tag);
+
       if (tag?.ndefMessage && tag.ndefMessage.length > 0) {
         const record = tag.ndefMessage[0];
         const payload = Uint8Array.from(record.payload);
         const text = Ndef.text.decodePayload(payload);
+        
+        console.log('✅ NFC data:', text);
         Vibration.vibrate(100);
         await onScan(text);
+      } else {
+        console.log('⚠️ No NDEF message found');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.log('NFC scan error:', error);
+      // Don't show error if user cancelled
+      if (error.toString().includes('cancelled')) {
+        console.log('User cancelled NFC scan');
+      }
     } finally {
-      NfcManager.cancelTechnologyRequest();
       setScanning(false);
+      stopPulseAnimation();
+      await cleanupNfc();
     }
   };
 
   const handleQrScan = async (data: string) => {
-    if (!enabled || isScanning || !data) return;
+    if (!enabled || isScanning || !data || mode !== 'qr') return;
 
+    console.log('📷 QR scanned:', data);
     setIsScanning(true);
     Vibration.vibrate(100);
-    await onScan(data);
-    setTimeout(() => setIsScanning(false), 2000);
+    
+    try {
+      await onScan(data);
+    } catch (error) {
+      console.log('QR scan error:', error);
+    } finally {
+      setTimeout(() => setIsScanning(false), 2000);
+    }
   };
 
   return (
@@ -135,7 +258,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
               styles.modeButton,
               mode === 'nfc' && styles.modeButtonActive,
             ]}
-            onPress={() => onModeChange('nfc')}
+            onPress={() => {
+              console.log('🔄 Switching to NFC mode');
+              onModeChange('nfc');
+            }}
             disabled={!nfcSupported}
           >
             <Feather
@@ -160,7 +286,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
               styles.modeButton,
               mode === 'qr' && styles.modeButtonActive,
             ]}
-            onPress={() => onModeChange('qr')}
+            onPress={() => {
+              console.log('🔄 Switching to QR mode');
+              onModeChange('qr');
+            }}
           >
             <Feather
               name="maximize"
@@ -216,7 +345,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                 !enabled && styles.scanButtonDisabled,
               ]}
               onPress={handleNfcScan}
-              disabled={!enabled || scanning}
+              disabled={!enabled}
             >
               <Feather
                 name={scanning ? 'x' : 'radio'}
@@ -233,18 +362,30 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         <View style={styles.qrContainer}>
           {!hasPermission ? (
             <View style={styles.permissionContainer}>
-              <Feather name="camera-off" size={64} color={Colors.textSecondary} />
-              <Text style={styles.permissionText}>Camera permission required</Text>
+              <Feather
+                name="camera-off"
+                size={64}
+                color={Colors.textSecondary}
+              />
+              <Text style={styles.permissionText}>
+                Camera permission required
+              </Text>
               <TouchableOpacity
                 style={styles.permissionButton}
                 onPress={requestPermission}
               >
-                <Text style={styles.permissionButtonText}>Grant Permission</Text>
+                <Text style={styles.permissionButtonText}>
+                  Grant Permission
+                </Text>
               </TouchableOpacity>
             </View>
           ) : !device ? (
             <View style={styles.permissionContainer}>
-              <Feather name="camera-off" size={64} color={Colors.textSecondary} />
+              <Feather
+                name="camera-off"
+                size={64}
+                color={Colors.textSecondary}
+              />
               <Text style={styles.permissionText}>Camera not available</Text>
             </View>
           ) : (
@@ -256,18 +397,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                 codeScanner={codeScanner}
               />
               <View style={styles.scanOverlay}>
-                {/* Scan Frame */}
                 <View style={styles.scanFrame}>
                   <View style={[styles.corner, styles.topLeft]} />
                   <View style={[styles.corner, styles.topRight]} />
                   <View style={[styles.corner, styles.bottomLeft]} />
                   <View style={[styles.corner, styles.bottomRight]} />
-
-                  {/* Center Line Animation */}
                   <View style={styles.scanLine} />
                 </View>
 
-                {/* Instructions */}
                 <View style={styles.qrInstructions}>
                   <Text style={styles.qrInstructionText}>
                     Position QR code within the frame
@@ -282,6 +419,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   );
 };
 
+// Styles remain exactly the same
 const styles = StyleSheet.create({
   cameraContainer: {
     flex: 1,

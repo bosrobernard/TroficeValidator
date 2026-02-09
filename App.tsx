@@ -4,6 +4,7 @@ import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import {AppNavigator} from './src/navigation/AppNavigator';
 import {Loader} from './src/components/common/Loader';
+import {AlertProvider} from './src/contexts/AlertContext'; // ✅ Import
 import {initDatabase} from './src/services/sqliteService';
 import {getProvisioning} from './src/services/deviceStorage';
 import {Colors} from './src/utils/colors';
@@ -18,10 +19,7 @@ const App = () => {
 
   const initialize = async () => {
     try {
-      // Initialize database
       await initDatabase();
-
-      // Check if device is provisioned
       const credentials = await getProvisioning();
       if (credentials) {
         setInitialRoute('Dashboard');
@@ -39,14 +37,16 @@ const App = () => {
 
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-        <StatusBar
-          barStyle="light-content"
-          backgroundColor={Colors.background}
-        />
-        <AppNavigator />
-        <Toast />
-      </SafeAreaView>
+      <AlertProvider> {/* ✅ Wrap with AlertProvider */}
+        <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+          <StatusBar
+            barStyle="light-content"
+            backgroundColor={Colors.background}
+          />
+          <AppNavigator initialRoute={initialRoute} />
+          <Toast />
+        </SafeAreaView>
+      </AlertProvider>
     </SafeAreaProvider>
   );
 };

@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,17 +7,18 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
-  Alert,
 } from 'react-native';
-import {Feather} from '@react-native-vector-icons/feather';
+import { Feather } from '@react-native-vector-icons/feather';
 import LinearGradient from 'react-native-linear-gradient';
-import {Colors} from '../utils/colors';
-import {Button} from '../components/common/Button';
-import {Loader} from '../components/common/Loader';
-import {ValidatorApi} from '../api/validatorApi';
-import {getProvisioning, clearProvisioning} from '../services/deviceStorage';
-import {getQueueCount} from '../services/offlineQueue';
-import {BootstrapResponse} from '../types';
+import { Colors } from '../utils/colors';
+import { Button } from '../components/common/Button';
+import { Loader } from '../components/common/Loader';
+import { ValidatorApi } from '../api/validatorApi';
+import { clearProvisioning } from '../services/deviceStorage';
+import { getQueueCount } from '../services/offlineQueue';
+import { BootstrapResponse } from '../types';
+import { useAlert } from '../contexts/AlertContext';
+import { useDeviceStore } from '../store/deviceStore';
 
 interface DashboardScreenProps {
   navigation: any;
@@ -30,7 +31,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [deviceInfo, setDeviceInfo] = useState<BootstrapResponse | null>(null);
   const [pendingEvents, setPendingEvents] = useState(0);
-  const api = new ValidatorApi('https://api.trofice.com');
+  const api = new ValidatorApi('https://trofice.com/api/validator');
+  const { showAlert } = useAlert();
+  const setBootstrapData = useDeviceStore(state => state.setBootstrapData); // ✅ Get setter
+  const clearBootstrapData = useDeviceStore(state => state.clearBootstrapData); // ✅ Get clearer
 
   useEffect(() => {
     loadDashboard();
@@ -39,17 +43,37 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const loadDashboard = async () => {
     try {
       const result = await api.bootstrap();
-      console.log('results---',result)
+      console.log('results---', result);
+
       if (result.success) {
-        setDeviceInfo(result.data);
+        const normalized = {
+          ...result.data,
+          device: {
+            ...result.data.device,
+            name: result.data.device.name ?? null,
+            assignedBatchId: result.data.device.assignedBatchId ?? null,
+            assignedVehicleId: result.data.device.assignedVehicleId ?? null,
+          },
+        };
+
+        setDeviceInfo(normalized);
+        setBootstrapData(normalized);
       } else {
-        Alert.alert('Error', result.message);
+        showAlert({
+          title: 'Error',
+          message: result.message,
+          type: 'error',
+        });
       }
 
       const count = await getQueueCount();
       setPendingEvents(count);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load dashboard');
+      showAlert({
+        title: 'Error',
+        message: error.message || 'Failed to load dashboard',
+        type: 'error',
+      });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -62,21 +86,26 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   };
 
   const handleLogout = () => {
-    Alert.alert(
-      'Logout',
-      'Are you sure you want to unprovision this device?',
-      [
-        {text: 'Cancel', style: 'cancel'},
+    showAlert({
+      title: 'Logout',
+      message: 'Are you sure you want to unprovision this device?',
+      type: 'warning',
+      buttons: [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
         {
           text: 'Logout',
           style: 'destructive',
           onPress: async () => {
             await clearProvisioning();
+            clearBootstrapData(); // ✅ Clear global state
             navigation.replace('Provisioning');
           },
         },
       ],
-    );
+    });
   };
 
   if (loading) {
@@ -93,11 +122,13 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
             onRefresh={handleRefresh}
             tintColor={Colors.primary}
           />
-        }>
+        }
+      >
         {/* Header */}
         <LinearGradient
           colors={[`${Colors.primary}20`, 'transparent']}
-          style={styles.headerGradient}>
+          style={styles.headerGradient}
+        >
           <View style={styles.header}>
             <View>
               <Text style={styles.greeting}>Trofice Validator</Text>
@@ -107,7 +138,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
             </View>
             <TouchableOpacity
               style={styles.logoutButton}
-              onPress={handleLogout}>
+              onPress={handleLogout}
+            >
               <Feather name="log-out" size={24} color={Colors.error} />
             </TouchableOpacity>
           </View>
@@ -130,7 +162,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                 deviceInfo?.device.status === 'ACTIVE'
                   ? styles.activeBadge
                   : styles.revokedBadge,
-              ]}>
+              ]}
+            >
               <View
                 style={[
                   styles.statusDot,
@@ -145,7 +178,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
                   deviceInfo?.device.status === 'ACTIVE'
                     ? styles.activeText
                     : styles.revokedText,
-                ]}>
+                ]}
+              >
                 {deviceInfo?.device.status || 'Unknown'}
               </Text>
             </View>
@@ -162,6 +196,16 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
             <View style={styles.statusRow}>
               <Text style={styles.statusLabel}>Name</Text>
               <Text style={styles.statusValue}>{deviceInfo.device.name}</Text>
+            </View>
+          )}
+
+          {/* ✅ Show Assigned Batch/Terminal */}
+          {deviceInfo?.device.assignedBatchId && (
+            <View style={styles.statusRow}>
+              <Text style={styles.statusLabel}>Terminal ID</Text>
+              <Text style={styles.statusValue}>
+                {deviceInfo.device.assignedBatchId}
+              </Text>
             </View>
           )}
         </View>
@@ -196,7 +240,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               variant="outline"
               size="sm"
               style={styles.syncButton}
-              icon={<Feather name="upload-cloud" size={18} color={Colors.primary} />}
+              icon={
+                <Feather name="upload-cloud" size={18} color={Colors.primary} />
+              }
             />
           )}
         </View>
@@ -205,27 +251,30 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         <View style={styles.actionsContainer}>
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() => navigation.navigate('TripSelect')}>
+            onPress={() => navigation.navigate('TripSelect')}
+          >
             <LinearGradient
               colors={[Colors.primary, Colors.primaryDark]}
-              style={styles.actionGradient}>
+              style={styles.actionGradient}
+            >
               <Feather name="map" size={32} color={Colors.textPrimary} />
               <Text style={styles.actionTitle}>Start Trip</Text>
               <Text style={styles.actionSubtitle}>
-                Select and download trip manifest
+                {deviceInfo?.device.assignedBatchId
+                  ? 'Load your assigned terminal'
+                  : 'Select and download trip manifest'}
               </Text>
             </LinearGradient>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() => navigation.navigate('Sync')}>
+            onPress={() => navigation.navigate('Sync')}
+          >
             <View style={[styles.actionGradient, styles.secondaryAction]}>
               <Feather name="database" size={32} color={Colors.primary} />
               <Text style={styles.actionTitle}>Sync Data</Text>
-              <Text style={styles.actionSubtitle}>
-                Upload pending scans
-              </Text>
+              <Text style={styles.actionSubtitle}>Upload pending scans</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -408,7 +457,7 @@ const styles = StyleSheet.create({
   },
   actionSubtitle: {
     fontSize: 12,
-    color: Colors.textSecondary,
+    color: Colors.textPrimary,
     textAlign: 'center',
   },
   serverTime: {
