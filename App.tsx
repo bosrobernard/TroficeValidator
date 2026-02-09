@@ -1,44 +1,60 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
+import React, {useEffect, useState} from 'react';
+import {StatusBar, StyleSheet} from 'react-native';
+import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
+import Toast from 'react-native-toast-message';
+import {AppNavigator} from './src/navigation/AppNavigator';
+import {Loader} from './src/components/common/Loader';
+import {initDatabase} from './src/services/sqliteService';
+import {getProvisioning} from './src/services/deviceStorage';
+import {Colors} from './src/utils/colors';
 
-import { NewAppScreen } from '@react-native/new-app-screen';
-import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
-import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
+const App = () => {
+  const [initializing, setInitializing] = useState(true);
+  const [initialRoute, setInitialRoute] = useState<string>('Provisioning');
 
-function App() {
-  const isDarkMode = useColorScheme() === 'dark';
+  useEffect(() => {
+    initialize();
+  }, []);
+
+  const initialize = async () => {
+    try {
+      // Initialize database
+      await initDatabase();
+
+      // Check if device is provisioned
+      const credentials = await getProvisioning();
+      if (credentials) {
+        setInitialRoute('Dashboard');
+      }
+    } catch (error) {
+      console.error('Initialization error:', error);
+    } finally {
+      setInitializing(false);
+    }
+  };
+
+  if (initializing) {
+    return <Loader visible={true} text="Initializing..." />;
+  }
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <StatusBar
+          barStyle="light-content"
+          backgroundColor={Colors.background}
+        />
+        <AppNavigator />
+        <Toast />
+      </SafeAreaView>
     </SafeAreaProvider>
   );
-}
-
-function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
-
-  return (
-    <View style={styles.container}>
-      <NewAppScreen
-        templateFileName="App.tsx"
-        safeAreaInsets={safeAreaInsets}
-      />
-    </View>
-  );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: Colors.background,
   },
 });
 
