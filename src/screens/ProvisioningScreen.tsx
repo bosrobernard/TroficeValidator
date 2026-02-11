@@ -209,43 +209,48 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
         </View>
       )}
 
-      {scanning && !downloadingBarcode ? (
+      {/* Camera Container - Always rendered, shows camera when scanning */}
+      {!downloadingBarcode && (
         <View style={styles.cameraContainer}>
-          <Camera
-            style={StyleSheet.absoluteFill}
-            device={device}
-            isActive={scanning && !downloadingBarcode}
-            codeScanner={codeScanner}
-            onError={handleCameraError}
-          />
-          <View style={styles.scanOverlay}>
-            <View style={styles.scanFrame}>
-              <View style={[styles.corner, styles.topLeft]} />
-              <View style={[styles.corner, styles.topRight]} />
-              <View style={[styles.corner, styles.bottomLeft]} />
-              <View style={[styles.corner, styles.bottomRight]} />
-            </View>
+          {scanning ? (
+            <>
+              <Camera
+                style={StyleSheet.absoluteFill}
+                device={device}
+                isActive={true}
+                codeScanner={codeScanner}
+                onError={handleCameraError}
+              />
+              <View style={styles.scanOverlay}>
+                <View style={styles.scanFrame}>
+                  <View style={[styles.corner, styles.topLeft]} />
+                  <View style={[styles.corner, styles.topRight]} />
+                  <View style={[styles.corner, styles.bottomLeft]} />
+                  <View style={[styles.corner, styles.bottomRight]} />
+                </View>
 
-            <View style={styles.scanInstructions}>
-              <Text style={styles.scanText}>
-                Position QR code within the frame
+                <View style={styles.scanInstructions}>
+                  <Text style={styles.scanText}>
+                    Position QR code within the frame
+                  </Text>
+                </View>
+              </View>
+            </>
+          ) : (
+            <View style={styles.instructionsOverlay}>
+              <Feather name="info" size={24} color={Colors.info} />
+              <Text style={styles.instructionsTitle}>How to provision:</Text>
+              <Text style={styles.instructionsText}>
+                1. Go to admin dashboard{'\n'}
+                2. Navigate to Devices section{'\n'}
+                3. Select this device{'\n'}
+                4. Click "Generate Provisioning QR"{'\n'}
+                5. Scan the displayed QR code
               </Text>
             </View>
-          </View>
+          )}
         </View>
-      ) : !downloadingBarcode ? (
-        <View style={styles.instructionsCard}>
-          <Feather name="info" size={24} color={Colors.info} />
-          <Text style={styles.instructionsTitle}>How to provision:</Text>
-          <Text style={styles.instructionsText}>
-            1. Go to admin dashboard{'\n'}
-            2. Navigate to Devices section{'\n'}
-            3. Select this device{'\n'}
-            4. Click "Generate Provisioning QR"{'\n'}
-            5. Scan the displayed QR code
-          </Text>
-        </View>
-      ) : null}
+      )}
 
       {!downloadingBarcode && (
         <View style={styles.footer}>
@@ -369,13 +374,13 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 20,
   },
-  instructionsCard: {
-    margin: 16,
+  instructionsOverlay: {
+    flex: 1,
     padding: 24,
     backgroundColor: Colors.surface,
     borderRadius: 20,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
     gap: 12,
   },
   instructionsTitle: {
@@ -387,6 +392,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textSecondary,
     lineHeight: 24,
+    textAlign: 'center',
   },
   footer: { padding: 16 },
   button: { marginTop: 16 },
