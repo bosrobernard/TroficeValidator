@@ -101,7 +101,144 @@ export async function saveTripPack(
   }
 }
 
-// ✅ Add this function to help debug
+// ✅ NEW: Update manifest with differential changes
+export async function updateManifestDiff(
+  tripId: string,
+  newManifestVersion: string,
+  newManifest: any[],
+): Promise<{ added: number; updated: number; removed: number }> {
+  let added = 0;
+  let updated = 0;
+  let removed = 0;
+
+  try {
+    await db.executeSql('BEGIN TRANSACTION');
+
+    // Get existing manifest entries for this trip
+    const [existingResults] = await db.executeSql(
+      'SELECT uniqueCodeHash, memberId, active, canBoard, reason, isPAYG, spendable FROM manifest WHERE tripId = ?',
+      [tripId],
+    );
+
+    // Create a map of existing entries by uniqueCodeHash
+    const existingMap = new Map();
+    for (let i = 0; i < existingResults.rows.length; i++) {
+      const entry = existingResults.rows.item(i);
+      existingMap.set(entry.uniqueCodeHash, {
+        memberId: entry.memberId,
+        active: entry.active,
+        canBoard: entry.canBoard,
+        reason: entry.reason,
+        isPAYG: entry.isPAYG,
+        spendable: entry.spendable,
+      });
+    }
+
+    // Create a set of new hashes for tracking
+    const newHashes = new Set<string>();
+
+    // Process new manifest entries
+    for (const passenger of newManifest) {
+      const codeHash = passenger.uniqueCodeHash;
+      newHashes.add(codeHash);
+
+      const existing = existingMap.get(codeHash);
+
+      if (!existing) {
+        // New passenger - insert
+        await db.executeSql(
+          `INSERT INTO manifest (
+            tripId, memberId, customerId, uniqueCodeHash, 
+            active, canBoard, reason, isPAYG, spendable
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            tripId,
+            passenger.memberId,
+            passenger.customerId,
+            codeHash,
+            passenger.active ? 1 : 0,
+            passenger.canBoard ? 1 : 0,
+            passenger.reason || '',
+            passenger.isPAYG ? 1 : 0,
+            passenger.spendable || 0,
+          ],
+        );
+        added++;
+        console.log(`➕ [ManifestDiff] Added: ${passenger.fullname || passenger.memberId}`);
+      } else {
+        // Check if any fields changed
+        const activeInt = passenger.active ? 1 : 0;
+        const canBoardInt = passenger.canBoard ? 1 : 0;
+        const isPAYGInt = passenger.isPAYG ? 1 : 0;
+        const reasonStr = passenger.reason || '';
+
+        const hasChanges =
+          existing.active !== activeInt ||
+          existing.canBoard !== canBoardInt ||
+          existing.reason !== reasonStr ||
+          existing.isPAYG !== isPAYGInt ||
+          Math.abs(existing.spendable - (passenger.spendable || 0)) > 0.01;
+
+        if (hasChanges) {
+          // Update existing passenger
+          await db.executeSql(
+            `UPDATE manifest SET 
+              active = ?, 
+              canBoard = ?, 
+              reason = ?, 
+              isPAYG = ?, 
+              spendable = ?
+            WHERE tripId = ? AND uniqueCodeHash = ?`,
+            [
+              activeInt,
+              canBoardInt,
+              reasonStr,
+              isPAYGInt,
+              passenger.spendable || 0,
+              tripId,
+              codeHash,
+            ],
+          );
+          updated++;
+          console.log(`✏️ [ManifestDiff] Updated: ${passenger.fullname || passenger.memberId}`, {
+            canBoard: `${existing.canBoard} → ${canBoardInt}`,
+            spendable: `${existing.spendable} → ${passenger.spendable}`,
+            reason: passenger.reason || 'none',
+          });
+        }
+      }
+    }
+
+    // Remove passengers that are no longer in the new manifest
+    for (const [hash, entry] of existingMap) {
+      if (!newHashes.has(hash)) {
+        await db.executeSql(
+          'DELETE FROM manifest WHERE tripId = ? AND uniqueCodeHash = ?',
+          [tripId, hash],
+        );
+        removed++;
+        console.log(`➖ [ManifestDiff] Removed: ${entry.memberId}`);
+      }
+    }
+
+    // Update trip manifest version
+    await db.executeSql(
+      'UPDATE trips SET manifestVersion = ? WHERE tripId = ?',
+      [newManifestVersion, tripId],
+    );
+
+    await db.executeSql('COMMIT');
+
+    console.log(`✅ [ManifestDiff] Changes: +${added} ~${updated} -${removed}`);
+    
+    return { added, updated, removed };
+  } catch (error) {
+    await db.executeSql('ROLLBACK');
+    console.error('❌ [ManifestDiff] Failed:', error);
+    throw error;
+  }
+}
+
 export async function getAllManifestForTrip(
   tripId: string,
 ): Promise<any[] | null> {
@@ -134,7 +271,6 @@ export async function getAllManifestForTrip(
   }
 }
 
-// ✅ Also add a debug function to check database contents
 export async function debugDatabaseContents(): Promise<void> {
   try {
     // Check trips table

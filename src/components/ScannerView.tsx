@@ -1,13 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Vibration,
-  Animated,
-  Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, Vibration, Animated } from 'react-native';
 import {
   Camera,
   useCameraDevice,
@@ -19,26 +11,21 @@ import { Feather } from '@react-native-vector-icons/feather';
 import { Colors } from '../utils/colors';
 
 interface ScannerViewProps {
-  mode: 'nfc' | 'qr';
   onScan: (data: string) => Promise<void>;
-  onModeChange: (mode: 'nfc' | 'qr') => void;
   enabled?: boolean;
-  showModeSwitch?: boolean;
 }
 
 export const ScannerView: React.FC<ScannerViewProps> = ({
-  mode,
   onScan,
-  onModeChange,
   enabled = true,
-  showModeSwitch = true,
 }) => {
-  const [scanning, setScanning] = useState(false);
   const [nfcSupported, setNfcSupported] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
+  const [nfcScanning, setNfcScanning] = useState(false);
+  const [isProcessingQr, setIsProcessingQr] = useState(false);
+  const [lastScanTime, setLastScanTime] = useState(0);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
-  const isInitializingNfc = useRef(false); // ✅ Track NFC initialization
+  const nfcLoopRef = useRef(true);
 
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -46,7 +33,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   const codeScanner = useCodeScanner({
     codeTypes: ['qr'],
     onCodeScanned: codes => {
-      if (codes.length > 0 && !isScanning && enabled && mode === 'qr') {
+      if (codes.length > 0 && !isProcessingQr && enabled) {
         const code = codes[0];
         if (code.value) {
           handleQrScan(code.value);
@@ -57,108 +44,77 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
 
   useEffect(() => {
     checkNfcSupport();
-    if (mode === 'qr' && !hasPermission) {
+    if (!hasPermission) {
       requestPermission();
     }
 
-    // Cleanup on unmount
     return () => {
       stopPulseAnimation();
       cleanupNfc();
     };
   }, []);
 
-  // ✅ Handle mode switching with proper async cleanup
+  // Start NFC scanning loop when enabled
   useEffect(() => {
-    const handleModeChange = async () => {
-      console.log('🔄 Mode changed to:', mode);
-      
-      // Stop any ongoing scans
-      setScanning(false);
-      setIsScanning(false);
-      
-      // Stop animation
-      stopPulseAnimation();
-      
-      if (mode === 'nfc' && nfcSupported) {
-        // Switch to NFC mode
-        await reinitializeNfc();
-      } else {
-        // Switch away from NFC mode
-        await cleanupNfc();
-      }
+    if (nfcSupported && enabled) {
+      startNfcLoop();
+    } else {
+      stopNfcLoop();
+    }
+
+    return () => {
+      stopNfcLoop();
     };
+  }, [nfcSupported, enabled]);
 
-    handleModeChange();
-  }, [mode, nfcSupported]);
-
-  // Handle NFC scanning state
+  // Handle pulse animation for NFC
   useEffect(() => {
-    if (scanning && mode === 'nfc') {
+    if (nfcScanning) {
       startPulseAnimation();
     } else {
       stopPulseAnimation();
     }
-  }, [scanning, mode]);
+  }, [nfcScanning]);
 
   const checkNfcSupport = async () => {
     try {
+      console.log('🔍 [NFC] Checking NFC support...');
       const supported = await NfcManager.isSupported();
-      console.log('📱 NFC supported:', supported);
-      setNfcSupported(supported);
+      console.log('📱 [NFC] Device NFC support:', supported);
+      
       if (supported) {
-        await NfcManager.start();
-        console.log('✅ NFC Manager started');
+        try {
+          await NfcManager.start();
+          console.log('✅ [NFC] NFC Manager started successfully');
+          setNfcSupported(true);
+        } catch (startError) {
+          console.error('❌ [NFC] Failed to start NFC Manager:', startError);
+          setNfcSupported(false);
+        }
+      } else {
+        console.log('ℹ️ [NFC] Device does not support NFC');
+        setNfcSupported(false);
       }
     } catch (error) {
-      console.log('❌ NFC check error:', error);
+      console.error('❌ [NFC] Error checking NFC support:', error);
       setNfcSupported(false);
     }
   };
 
-  // ✅ Cleanup NFC properly
   const cleanupNfc = async () => {
     try {
-      console.log('🧹 Cleaning up NFC...');
+      console.log('🧹 [NFC] Cleaning up NFC...');
+      nfcLoopRef.current = false;
       await NfcManager.cancelTechnologyRequest();
-      console.log('✅ NFC cleanup complete');
     } catch (error) {
-      console.log('⚠️ NFC cleanup error (safe to ignore):', error);
-    }
-  };
-
-  // ✅ Reinitialize NFC when switching back
-  const reinitializeNfc = async () => {
-    if (isInitializingNfc.current) {
-      console.log('⏳ NFC initialization already in progress...');
-      return;
-    }
-
-    try {
-      isInitializingNfc.current = true;
-      console.log('🔄 Reinitializing NFC...');
-      
-      // First, cancel any existing requests
-      await cleanupNfc();
-      
-      // Small delay to ensure cleanup completes
-      await new Promise<void>(resolve => setTimeout(() => resolve(), 100));
-      
-      // Restart NFC manager
-      await NfcManager.start();
-      console.log('✅ NFC reinitialized and ready');
-    } catch (error) {
-      console.log('❌ NFC reinitialization error:', error);
-    } finally {
-      isInitializingNfc.current = false;
+      // Ignore cleanup errors
+      console.log('ℹ️ [NFC] Cleanup error (ignored):', error);
     }
   };
 
   const startPulseAnimation = () => {
-    // Stop any existing animation
     stopPulseAnimation();
 
-    // Create new animation
     pulseAnimationRef.current = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
@@ -182,373 +138,276 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
       pulseAnimationRef.current.stop();
       pulseAnimationRef.current = null;
     }
-    pulseAnim.setValue(1); // Reset to default scale
+    pulseAnim.setValue(1);
   };
 
-  const handleNfcScan = async () => {
-    if (!enabled || mode !== 'nfc') return;
+  // Continuous NFC scanning loop
+  const startNfcLoop = async () => {
+    nfcLoopRef.current = true;
+    console.log('🔵 [NFC] Starting continuous NFC scanning');
 
-    // If already scanning, this is a cancel action
-    if (scanning) {
-      console.log('❌ Cancelling NFC scan');
-      setScanning(false);
-      stopPulseAnimation();
-      await cleanupNfc();
-      return;
+    while (nfcLoopRef.current && nfcSupported && enabled) {
+      try {
+        setNfcScanning(true);
+
+        await NfcManager.requestTechnology(NfcTech.Ndef, {
+          alertMessage: 'Ready to scan NFC card',
+        });
+
+        const tag = await NfcManager.getTag();
+        console.log('📱 [NFC] Tag detected:', tag);
+
+        if (tag?.ndefMessage && tag.ndefMessage.length > 0) {
+          const record = tag.ndefMessage[0];
+          const payload = Uint8Array.from(record.payload);
+          const text = Ndef.text.decodePayload(payload);
+
+          console.log('✅ [NFC] Data decoded:', text);
+          Vibration.vibrate(100);
+
+          // Check for duplicate scan (within 3 seconds)
+          const now = Date.now();
+          if (now - lastScanTime > 3000) {
+            setLastScanTime(now);
+            await onScan(text);
+          } else {
+            console.log('⏭️ [NFC] Duplicate scan ignored (too soon)');
+            Vibration.vibrate([0, 100, 100, 100]); // Different vibration for duplicate
+          }
+        }
+
+        // Cancel technology request after successful read
+        await NfcManager.cancelTechnologyRequest();
+
+        // Small delay before next scan
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 500));
+      } catch (error: any) {
+        // Silently handle errors and continue loop
+        const errorStr = error.toString();
+
+        if (
+          !errorStr.includes('cancelled') &&
+          !errorStr.includes('Session invalidated')
+        ) {
+          console.log('⚠️ [NFC] Scan error:', errorStr);
+        }
+
+        try {
+          await NfcManager.cancelTechnologyRequest();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+
+        // Small delay before retry
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 500));
+      }
     }
 
-    try {
-      console.log('🔵 Starting NFC scan');
-      setScanning(true);
-      
-      await NfcManager.requestTechnology(NfcTech.Ndef, {
-        alertMessage: 'Ready to scan NFC card',
-      });
+    setNfcScanning(false);
+    console.log('⏸️ [NFC] Scanning loop stopped');
+  };
 
-      const tag = await NfcManager.getTag();
-      console.log('📱 NFC tag detected:', tag);
-
-      if (tag?.ndefMessage && tag.ndefMessage.length > 0) {
-        const record = tag.ndefMessage[0];
-        const payload = Uint8Array.from(record.payload);
-        const text = Ndef.text.decodePayload(payload);
-        
-        console.log('✅ NFC data:', text);
-        Vibration.vibrate(100);
-        await onScan(text);
-      } else {
-        console.log('⚠️ No NDEF message found');
-      }
-    } catch (error: any) {
-      console.log('NFC scan error:', error);
-      // Don't show error if user cancelled
-      if (error.toString().includes('cancelled')) {
-        console.log('User cancelled NFC scan');
-      }
-    } finally {
-      setScanning(false);
-      stopPulseAnimation();
-      await cleanupNfc();
-    }
+  const stopNfcLoop = () => {
+    console.log('🛑 [NFC] Stopping NFC loop');
+    nfcLoopRef.current = false;
+    cleanupNfc();
   };
 
   const handleQrScan = async (data: string) => {
-    if (!enabled || isScanning || !data || mode !== 'qr') return;
+    if (!enabled || isProcessingQr || !data) return;
 
-    console.log('📷 QR scanned:', data);
-    setIsScanning(true);
+    console.log('📷 [QR] QR code scanned:', data);
+
+    // Check for duplicate scan (within 3 seconds)
+    const now = Date.now();
+    if (now - lastScanTime < 3000) {
+      console.log('⏭️ [QR] Duplicate scan ignored (too soon)');
+      Vibration.vibrate([0, 100, 100, 100]); // Different vibration for duplicate
+      return;
+    }
+
+    setIsProcessingQr(true);
+    setLastScanTime(now);
     Vibration.vibrate(100);
-    
+
     try {
       await onScan(data);
     } catch (error) {
-      console.log('QR scan error:', error);
+      console.error('❌ [QR] Scan error:', error);
     } finally {
-      setTimeout(() => setIsScanning(false), 2000);
+      // Prevent rapid re-scans
+      setTimeout(() => setIsProcessingQr(false), 3000);
     }
   };
 
   return (
     <View style={styles.container}>
-      {/* Mode Switch */}
-      {showModeSwitch && (
-        <View style={styles.modeSwitch}>
-          <TouchableOpacity
-            style={[
-              styles.modeButton,
-              mode === 'nfc' && styles.modeButtonActive,
-            ]}
-            onPress={() => {
-              console.log('🔄 Switching to NFC mode');
-              onModeChange('nfc');
-            }}
-            disabled={!nfcSupported}
+      {/* Status Indicators */}
+      <View style={styles.statusBar}>
+        {/* NFC Status */}
+        <View style={styles.statusItem}>
+          <Animated.View
+            style={[styles.statusIcon, { transform: [{ scale: pulseAnim }] }]}
           >
             <Feather
-              name="credit-card"
+              name="smartphone"
               size={20}
-              color={mode === 'nfc' ? Colors.textPrimary : Colors.textSecondary}
+              color={nfcScanning ? Colors.primary : nfcSupported ? Colors.success : Colors.textSecondary}
             />
+          </Animated.View>
+          <View style={styles.statusText}>
+            <Text style={styles.statusLabel}>NFC</Text>
             <Text
-              style={[styles.modeText, mode === 'nfc' && styles.modeTextActive]}
+              style={[
+                styles.statusValue,
+                nfcScanning && styles.statusValueActive,
+              ]}
             >
-              NFC Card
+              {nfcScanning ? 'Scanning...' : nfcSupported ? 'Ready' : 'Not Available'}
             </Text>
-            {!nfcSupported && (
-              <View style={styles.disabledBadge}>
-                <Text style={styles.disabledText}>N/A</Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          </View>
+        </View>
 
-          <TouchableOpacity
-            style={[
-              styles.modeButton,
-              mode === 'qr' && styles.modeButtonActive,
-            ]}
-            onPress={() => {
-              console.log('🔄 Switching to QR mode');
-              onModeChange('qr');
-            }}
-          >
+        {/* QR Status */}
+        <View style={styles.statusItem}>
+          <View style={styles.statusIcon}>
             <Feather
               name="maximize"
               size={20}
-              color={mode === 'qr' ? Colors.textPrimary : Colors.textSecondary}
+              color={hasPermission ? Colors.primary : Colors.textSecondary}
             />
+          </View>
+          <View style={styles.statusText}>
+            <Text style={styles.statusLabel}>QR Code</Text>
             <Text
-              style={[styles.modeText, mode === 'qr' && styles.modeTextActive]}
-            >
-              QR Code
-            </Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Scanner Content */}
-      {mode === 'nfc' ? (
-        <View style={styles.nfcContainer}>
-          <View style={styles.nfcCard}>
-            <Animated.View
               style={[
-                styles.nfcIconContainer,
-                { transform: [{ scale: pulseAnim }] },
+                styles.statusValue,
+                hasPermission && styles.statusValueActive,
               ]}
             >
-              <Feather
-                name="smartphone"
-                size={80}
-                color={scanning ? Colors.primary : Colors.textSecondary}
-              />
-            </Animated.View>
-
-            <Text style={styles.nfcTitle}>
-              {scanning ? 'Scanning...' : 'Ready to Scan'}
+              {hasPermission ? 'Scanning...' : 'No Permission'}
             </Text>
-            <Text style={styles.nfcSubtitle}>
-              {scanning ? 'Hold card near device' : 'Tap "Scan NFC" to start'}
-            </Text>
-
-            {scanning && (
-              <View style={styles.scanningIndicator}>
-                <View style={styles.scanningDot} />
-                <Text style={styles.scanningText}>Waiting for card...</Text>
-              </View>
-            )}
-          </View>
-
-          <View style={styles.nfcActions}>
-            <TouchableOpacity
-              style={[
-                styles.scanButton,
-                scanning && styles.scanButtonActive,
-                !enabled && styles.scanButtonDisabled,
-              ]}
-              onPress={handleNfcScan}
-              disabled={!enabled}
-            >
-              <Feather
-                name={scanning ? 'x' : 'radio'}
-                size={24}
-                color={Colors.textPrimary}
-              />
-              <Text style={styles.scanButtonText}>
-                {scanning ? 'Cancel Scan' : 'Scan NFC'}
-              </Text>
-            </TouchableOpacity>
           </View>
         </View>
-      ) : (
-        <View style={styles.qrContainer}>
-          {!hasPermission ? (
-            <View style={styles.permissionContainer}>
-              <Feather
-                name="camera-off"
-                size={64}
-                color={Colors.textSecondary}
-              />
-              <Text style={styles.permissionText}>
-                Camera permission required
-              </Text>
-              <TouchableOpacity
-                style={styles.permissionButton}
-                onPress={requestPermission}
-              >
-                <Text style={styles.permissionButtonText}>
-                  Grant Permission
-                </Text>
-              </TouchableOpacity>
-            </View>
-          ) : !device ? (
-            <View style={styles.permissionContainer}>
-              <Feather
-                name="camera-off"
-                size={64}
-                color={Colors.textSecondary}
-              />
-              <Text style={styles.permissionText}>Camera not available</Text>
-            </View>
-          ) : (
-            <View style={styles.cameraContainer}>
-              <Camera
-                style={StyleSheet.absoluteFill}
-                device={device}
-                isActive={mode === 'qr' && enabled}
-                codeScanner={codeScanner}
-              />
-              <View style={styles.scanOverlay}>
-                <View style={styles.scanFrame}>
-                  <View style={[styles.corner, styles.topLeft]} />
-                  <View style={[styles.corner, styles.topRight]} />
-                  <View style={[styles.corner, styles.bottomLeft]} />
-                  <View style={[styles.corner, styles.bottomRight]} />
+      </View>
+
+      {/* QR Scanner */}
+      <View style={styles.qrContainer}>
+        {!hasPermission ? (
+          <View style={styles.permissionContainer}>
+            <Feather name="camera-off" size={64} color={Colors.textSecondary} />
+            <Text style={styles.permissionText}>
+              Camera permission required for QR scanning
+            </Text>
+          </View>
+        ) : !device ? (
+          <View style={styles.permissionContainer}>
+            <Feather name="camera-off" size={64} color={Colors.textSecondary} />
+            <Text style={styles.permissionText}>Camera not available</Text>
+          </View>
+        ) : (
+          <View style={styles.cameraContainer}>
+            <Camera
+              style={StyleSheet.absoluteFill}
+              device={device}
+              isActive={enabled && hasPermission}
+              codeScanner={codeScanner}
+            />
+            <View style={styles.scanOverlay}>
+              {/* ✅ Improved scan frame with better corner positioning */}
+              <View style={styles.scanFrame}>
+                {/* Top Left Corner */}
+                <View style={[styles.corner, styles.topLeft]} />
+                {/* Top Right Corner */}
+                <View style={[styles.corner, styles.topRight]} />
+                {/* Bottom Left Corner */}
+                <View style={[styles.corner, styles.bottomLeft]} />
+                {/* Bottom Right Corner */}
+                <View style={[styles.corner, styles.bottomRight]} />
+                
+                {/* Scan Line Animation */}
+                <View style={styles.scanLineContainer}>
                   <View style={styles.scanLine} />
                 </View>
+              </View>
 
-                <View style={styles.qrInstructions}>
+              <View style={styles.qrInstructions}>
+                <Feather name="info" size={16} color={Colors.textPrimary} />
+                <View style={styles.instructionTextContainer}>
                   <Text style={styles.qrInstructionText}>
-                    Position QR code within the frame
+                    Scan QR code or tap NFC card
+                  </Text>
+                  <Text style={styles.qrInstructionSubtext}>
+                    {nfcSupported ? 'Both methods work simultaneously' : 'QR scanning only (NFC not available)'}
                   </Text>
                 </View>
               </View>
             </View>
-          )}
-        </View>
-      )}
+          </View>
+        )}
+      </View>
     </View>
   );
 };
 
-// Styles remain exactly the same
 const styles = StyleSheet.create({
-  cameraContainer: {
-    flex: 1,
-    overflow: 'hidden',
-    backgroundColor: '#000',
-  },
-  camera: {
-    flex: 1,
-  },
   container: {
     flex: 1,
   },
-  modeSwitch: {
+  statusBar: {
     flexDirection: 'row',
-    margin: 16,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 4,
-    gap: 4,
-  },
-  modeButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 12,
-    borderRadius: 8,
-    gap: 8,
-    position: 'relative',
-  },
-  modeButtonActive: {
-    backgroundColor: Colors.primary,
-  },
-  modeText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  modeTextActive: {
-    color: Colors.textPrimary,
-  },
-  disabledBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    backgroundColor: Colors.error,
-    borderRadius: 8,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  disabledText: {
-    fontSize: 9,
-    fontWeight: 'bold',
-    color: Colors.textPrimary,
-  },
-  nfcContainer: {
-    flex: 1,
-    padding: 16,
-  },
-  nfcCard: {
-    flex: 1,
-    backgroundColor: Colors.surface,
-    borderRadius: 20,
-    padding: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: Colors.border,
-    borderStyle: 'dashed',
-  },
-  nfcIconContainer: {
-    marginBottom: 24,
-  },
-  nfcTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: Colors.textPrimary,
-    marginBottom: 8,
-  },
-  nfcSubtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-  },
-  scanningIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 24,
-    gap: 8,
-  },
-  scanningDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.primary,
-  },
-  scanningText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontStyle: 'italic',
-  },
-  nfcActions: {
-    marginTop: 16,
-  },
-  scanButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.primary,
-    borderRadius: 12,
     padding: 16,
     gap: 12,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
   },
-  scanButtonActive: {
-    backgroundColor: Colors.error,
+  statusItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 12,
   },
-  scanButtonDisabled: {
-    opacity: 0.5,
+  statusIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: `${Colors.primary}20`,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  scanButtonText: {
-    fontSize: 16,
+  statusText: {
+    flex: 1,
+  },
+  statusLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+  },
+  statusValue: {
+    fontSize: 13,
     fontWeight: 'bold',
-    color: Colors.textPrimary,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  statusValueActive: {
+    color: Colors.primary,
   },
   qrContainer: {
     flex: 1,
     margin: 16,
     borderRadius: 20,
     overflow: 'hidden',
+  },
+  cameraContainer: {
+    flex: 1,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    borderRadius: 20,
   },
   scanOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -560,62 +419,82 @@ const styles = StyleSheet.create({
     width: 280,
     height: 280,
     position: 'relative',
+    backgroundColor: 'transparent',
   },
   corner: {
     position: 'absolute',
-    width: 50,
-    height: 50,
+    width: 40,
+    height: 40,
     borderColor: Colors.primary,
-    borderWidth: 4,
+    borderWidth: 5,
   },
   topLeft: {
     top: 0,
     left: 0,
     borderRightWidth: 0,
     borderBottomWidth: 0,
-    borderTopLeftRadius: 8,
+    borderTopLeftRadius: 12,
   },
   topRight: {
     top: 0,
     right: 0,
     borderLeftWidth: 0,
     borderBottomWidth: 0,
-    borderTopRightRadius: 8,
+    borderTopRightRadius: 12,
   },
   bottomLeft: {
     bottom: 0,
     left: 0,
     borderRightWidth: 0,
     borderTopWidth: 0,
-    borderBottomLeftRadius: 8,
+    borderBottomLeftRadius: 12,
   },
   bottomRight: {
     bottom: 0,
     right: 0,
     borderLeftWidth: 0,
     borderTopWidth: 0,
-    borderBottomRightRadius: 8,
+    borderBottomRightRadius: 12,
   },
-  scanLine: {
+  scanLineContainer: {
     position: 'absolute',
     top: '50%',
-    left: 0,
-    right: 0,
+    left: 10,
+    right: 10,
     height: 2,
+    marginTop: -1,
+  },
+  scanLine: {
+    width: '100%',
+    height: '100%',
     backgroundColor: Colors.primary,
+    opacity: 0.8,
   },
   qrInstructions: {
     position: 'absolute',
-    bottom: 60,
+    bottom: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     backgroundColor: Colors.overlay,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
     borderRadius: 20,
+    maxWidth: '85%',
+  },
+  instructionTextContainer: {
+    flex: 1,
   },
   qrInstructionText: {
     color: Colors.textPrimary,
     fontSize: 14,
     fontWeight: '600',
+  },
+  qrInstructionSubtext: {
+    color: Colors.textPrimary,
+    fontSize: 11,
+    opacity: 0.7,
+    marginTop: 2,
   },
   permissionContainer: {
     flex: 1,
@@ -623,23 +502,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: Colors.surface,
     padding: 24,
+    borderRadius: 20,
   },
   permissionText: {
     fontSize: 16,
     color: Colors.textSecondary,
     marginVertical: 16,
     textAlign: 'center',
-  },
-  permissionButton: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-    marginTop: 8,
-  },
-  permissionButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 16,
-    fontWeight: '600',
   },
 });

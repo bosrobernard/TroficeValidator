@@ -11,15 +11,15 @@ export interface BootstrapResponse {
     deviceType: 'DRIVER_APP' | 'VALIDATOR';
     assignedBatchId?: string | null;
     assignedVehicleId?: string | null;
-    status: 'ACTIVE' | 'REVOKED';
+    status?: 'ACTIVE' | 'REVOKED';
   };
-  serverTime: string;
-  sync: {
+  serverTime?: string;
+  sync?: {
     maxBatchSize: number;
     recommendedIntervalSeconds: number;
   };
+  token?: string; // ✅ Made optional since it's stored separately
 }
-
 export interface CurrentTripResponse {
   _id: string;
   batchId: any;

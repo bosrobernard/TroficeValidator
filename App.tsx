@@ -59,3 +59,116 @@ const styles = StyleSheet.create({
 });
 
 export default App;
+
+
+// import React, {useEffect, useState} from 'react';
+// import {
+//   View,
+//   Text,
+//   StyleSheet,
+//   ActivityIndicator,
+//   Button,
+//   ScrollView,
+// } from 'react-native';
+
+// const TEST_URL = 'https://jsonplaceholder.typicode.com/posts/1'; 
+// const TEST_URL2 = 'https://google.com';
+
+// const App = () => {
+//   const [loading, setLoading] = useState(false);
+//   const [result, setResult] = useState<string>('Not tested yet');
+//   const [error, setError] = useState<string | null>(null);
+
+//   const testNetwork = async () => {
+//     setLoading(true);
+//     setResult('Testing...');
+//     setError(null);
+
+//     try {
+//       const response = await fetch(TEST_URL);
+//       const data = await response.json();
+
+//       setResult(JSON.stringify(data, null, 2));
+//     } catch (err: any) {
+//       console.log('Network Error:', err);
+//       setError(err.message || 'Unknown error');
+//       setResult('Failed');
+//     } finally {
+//       setLoading(false);
+//     }
+//   };
+
+//     const testNetworktWO = async () => {
+//     setLoading(true);
+//     setResult('Testing...');
+//     setError(null);
+
+//     try {
+//       const response = await fetch(TEST_URL2);
+//       const data = await response.json();
+
+//       setResult(JSON.stringify(data, null, 2));
+//     } catch (err: any) {
+//       console.log('Network Error:', err);
+//       setError(err.message || 'Unknown error');
+//       setResult('Failed');
+//     } finally {
+//       setLoading(false);
+//     }
+//   };
+
+//   useEffect(() => {
+//     testNetwork();
+//   }, []);
+
+//   return (
+//     <ScrollView contentContainerStyle={styles.container}>
+//       <Text style={styles.title}>Network Test</Text>
+
+//       {loading && <ActivityIndicator size="large" />}
+
+//       <Button title="Test Network 1" onPress={testNetwork} />
+//        <Button title="Test Network 2" onPress={testNetworktWO} />
+
+//       <Text style={styles.label}>Result:</Text>
+//       <Text style={styles.result}>{result}</Text>
+
+//       {error && (
+//         <>
+//           <Text style={styles.errorTitle}>Error:</Text>
+//           <Text style={styles.error}>{error}</Text>
+//         </>
+//       )}
+//     </ScrollView>
+//   );
+// };
+
+// const styles = StyleSheet.create({
+//   container: {
+//     flexGrow: 1,
+//     padding: 20,
+//     justifyContent: 'center',
+//   },
+//   title: {
+//     fontSize: 22,
+//     fontWeight: 'bold',
+//     marginBottom: 20,
+//   },
+//   label: {
+//     marginTop: 20,
+//     fontWeight: 'bold',
+//   },
+//   result: {
+//     marginTop: 10,
+//   },
+//   errorTitle: {
+//     marginTop: 20,
+//     color: 'red',
+//     fontWeight: 'bold',
+//   },
+//   error: {
+//     color: 'red',
+//   },
+// });
+
+// export default App;

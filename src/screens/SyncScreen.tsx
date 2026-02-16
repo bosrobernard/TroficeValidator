@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   SafeAreaView,
   ScrollView,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { Feather } from '@react-native-vector-icons/feather';
 import LinearGradient from 'react-native-linear-gradient';
@@ -23,33 +22,92 @@ import { useTripStore } from '../store/tripStore';
 import { format } from 'date-fns';
 import { useAlert } from '../contexts/AlertContext';
 import { useDeviceStore } from '../store/deviceStore';
+import BackgroundSyncService from '../services/backgroundSyncService';
 
 interface SyncScreenProps {
   navigation: any;
 }
+
+  const api = new ValidatorApi('https://trofice.com/api/validator');
+
 
 export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
   const [loading, setLoading] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [syncResults, setSyncResults] = useState<any>(null);
+  const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState(true);
+  const [nextAutoSync, setNextAutoSync] = useState<Date | null>(null);
+
   const currentTrip = useTripStore((state: any) => state.currentTrip);
-  const api = new ValidatorApi('https://trofice.com/api/validator');
   const bootstrapData = useDeviceStore(state => state.bootstrapData);
   const recommendedInterval =
-    bootstrapData?.sync.recommendedIntervalSeconds || 60;
+    bootstrapData?.sync?.recommendedIntervalSeconds || 60;
   const { showAlert } = useAlert();
+
+  const backgroundSync = BackgroundSyncService.getInstance();
+  const updateTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     loadPendingCount();
+
+    // Configure background sync
+    backgroundSync.setInterval(recommendedInterval);
+    if (isAutoSyncEnabled) {
+      backgroundSync.enable();
+    }
+
+    // Listen for sync completion to update UI
+    const unsubscribe = backgroundSync.addListener(() => {
+      loadPendingCount();
+      setLastSync(new Date());
+    });
+
+    // Update next sync countdown every second
+    startCountdownTimer();
+
+    return () => {
+      unsubscribe();
+      stopCountdownTimer();
+    };
   }, []);
+
+  useEffect(() => {
+    if (isAutoSyncEnabled) {
+      backgroundSync.enable();
+    } else {
+      backgroundSync.disable();
+    }
+  }, [isAutoSyncEnabled]);
+
+  useEffect(() => {
+    backgroundSync.setInterval(recommendedInterval);
+  }, [recommendedInterval]);
+
+  const startCountdownTimer = () => {
+    if (updateTimerRef.current) {
+      clearInterval(updateTimerRef.current);
+    }
+
+    updateTimerRef.current = setInterval(() => {
+      // Force re-render to update countdown
+      setNextAutoSync(new Date(Date.now() + recommendedInterval * 1000));
+    }, 1000) as unknown as number;
+  };
+
+  const stopCountdownTimer = () => {
+    if (updateTimerRef.current) {
+      clearInterval(updateTimerRef.current);
+      updateTimerRef.current = null;
+    }
+  };
 
   const loadPendingCount = async () => {
     const count = await getQueueCount();
     setPendingCount(count);
   };
 
-  const handleSync = async () => {
+  const handleManualSync = async () => {
     if (!currentTrip) {
       showAlert({
         title: 'Error',
@@ -59,7 +117,8 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
       return;
     }
 
-    if (pendingCount === 0) {
+    const count = await getQueueCount();
+    if (count === 0) {
       showAlert({
         title: 'Info',
         message: 'No pending events to sync',
@@ -126,18 +185,39 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
     }
   };
 
-  // ✅ Helper function to truncate long strings
+  const toggleAutoSync = () => {
+    setIsAutoSyncEnabled(!isAutoSyncEnabled);
+    if (!isAutoSyncEnabled) {
+      showAlert({
+        title: 'Auto-Sync Enabled',
+        message: `Events will sync automatically every ${recommendedInterval} seconds in the background`,
+        type: 'success',
+      });
+    } else {
+      showAlert({
+        title: 'Auto-Sync Disabled',
+        message: 'You can still sync manually',
+        type: 'info',
+      });
+    }
+  };
+
   const truncateString = (str: string, maxLength: number = 20): string => {
     if (!str) return 'N/A';
     if (str.length <= maxLength) return str;
     return str.substring(0, maxLength) + '...';
   };
 
+  const getNextSyncCountdown = (): string => {
+    if (!isAutoSyncEnabled) return '';
+    const seconds = recommendedInterval;
+    return `in ~${seconds}s`;
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <Loader visible={loading} text="Syncing events..." />
 
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backButton}
@@ -155,7 +235,6 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Status Card */}
         <LinearGradient
           colors={[Colors.primary, Colors.primaryDark]}
           style={styles.statusCard}
@@ -171,12 +250,54 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
           </View>
           {lastSync && (
             <Text style={styles.lastSyncText}>
-              Last sync: {format(lastSync, 'MMM dd, yyyy HH:mm')}
+              Last sync: {format(lastSync, 'MMM dd, yyyy HH:mm:ss')}
             </Text>
           )}
         </LinearGradient>
 
-        {/* Trip Info */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Feather
+              name={isAutoSyncEnabled ? 'zap' : 'zap-off'}
+              size={24}
+              color={isAutoSyncEnabled ? Colors.success : Colors.textSecondary}
+            />
+            <Text style={styles.cardTitle}>Background Auto-Sync</Text>
+          </View>
+          <View style={styles.autoSyncContent}>
+            <View style={styles.autoSyncInfo}>
+              <Text style={styles.autoSyncLabel}>
+                {isAutoSyncEnabled ? 'Enabled' : 'Disabled'}
+              </Text>
+              <Text style={styles.autoSyncDescription}>
+                {isAutoSyncEnabled
+                  ? `Syncing every ${recommendedInterval}s (even when app is in background)`
+                  : 'Manual sync only'}
+              </Text>
+              {isAutoSyncEnabled && (
+                <Text style={styles.nextSyncText}>
+                  Next sync {getNextSyncCountdown()}
+                </Text>
+              )}
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.toggleButton,
+                isAutoSyncEnabled && styles.toggleButtonActive,
+              ]}
+              onPress={toggleAutoSync}
+            >
+              <Feather
+                name={isAutoSyncEnabled ? 'toggle-right' : 'toggle-left'}
+                size={32}
+                color={
+                  isAutoSyncEnabled ? Colors.success : Colors.textSecondary
+                }
+              />
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {currentTrip && (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
@@ -187,20 +308,17 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Trip ID</Text>
                 <Text style={styles.infoValue}>
-                  {truncateString(currentTrip.trip.tripId, 15)}{' '}
-                  {/* ✅ Truncated */}
+                  {truncateString(currentTrip.trip.tripId, 15)}
                 </Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Route</Text>
                 <Text style={styles.infoValue}>
-                  {truncateString(currentTrip.trip.routeId, 15)}{' '}
-                  {/* ✅ Truncated */}
+                  {truncateString(currentTrip.trip.routeId, 15)}
                 </Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Manifest Version</Text>
-                {/* ✅ Make version touchable to show full value */}
                 <TouchableOpacity
                   onPress={() => {
                     showAlert({
@@ -212,8 +330,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
                 >
                   <View style={styles.versionContainer}>
                     <Text style={styles.infoValue}>
-                      {truncateString(currentTrip.manifestVersion, 12)}{' '}
-                      {/* ✅ Truncated */}
+                      {truncateString(currentTrip.manifestVersion, 12)}
                     </Text>
                     <Feather
                       name="info"
@@ -227,7 +344,6 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
           </View>
         )}
 
-        {/* Sync Results */}
         {syncResults && (
           <View style={styles.card}>
             <View style={styles.cardHeader}>
@@ -264,7 +380,6 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
               </View>
             </View>
 
-            {/* Individual Results */}
             <View style={styles.resultsList}>
               {syncResults.results.map((result: any, index: number) => (
                 <View
@@ -311,31 +426,29 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
           </View>
         )}
 
-        {/* Instructions */}
         <View style={styles.instructionsCard}>
           <Feather name="info" size={20} color={Colors.info} />
           <View style={styles.instructionsContent}>
-            <Text style={styles.instructionsTitle}>About Sync</Text>
+            <Text style={styles.instructionsTitle}>About Background Sync</Text>
             <Text style={styles.instructionsText}>
-              • Events are queued locally and synced when online{'\n'}•
-              Recommended sync interval: {recommendedInterval} seconds{'\n'}•
+              • Events sync automatically in the background{'\n'}•
+              Auto-sync interval: {recommendedInterval} seconds{'\n'}•
+              Works even when the app is in the background{'\n'}•
               Accepted events are permanently recorded{'\n'}• Duplicates are
-              ignored automatically{'\n'}• Rejected events remain in queue for
-              review
+              ignored automatically
             </Text>
           </View>
         </View>
       </ScrollView>
 
-      {/* Sync Button */}
       <View style={styles.footer}>
         <Button
           title={
             pendingCount > 0
-              ? `Sync ${pendingCount} Events`
+              ? `Sync ${pendingCount} Events Now`
               : 'No Events to Sync'
           }
-          onPress={handleSync}
+          onPress={handleManualSync}
           disabled={pendingCount === 0 || !currentTrip}
           icon={
             <Feather name="upload-cloud" size={20} color={Colors.textPrimary} />
@@ -346,6 +459,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
   );
 };
 
+// ... (styles remain the same)
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -430,6 +544,34 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: Colors.textPrimary,
   },
+  autoSyncContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  autoSyncInfo: {
+    flex: 1,
+  },
+  autoSyncLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+    marginBottom: 4,
+  },
+  autoSyncDescription: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+  },
+  nextSyncText: {
+    fontSize: 12,
+    color: Colors.info,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  toggleButton: {
+    padding: 8,
+  },
+  toggleButtonActive: {},
   tripInfo: {
     gap: 12,
   },

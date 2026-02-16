@@ -1,10 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
-  Alert,
   Vibration,
 } from 'react-native';
 import { Feather } from '@react-native-vector-icons/feather';
@@ -13,32 +11,59 @@ import { TripHeader } from '../components/TripHeader';
 import { ScannerView } from '../components/ScannerView';
 import { Card, CardSection } from '../components/common/Card';
 import { useTripStore } from '../store/tripStore';
-import {
-  getAllManifestForTrip,
-  lookupPassenger,
-} from '../services/sqliteService';
+import { lookupPassenger } from '../services/sqliteService';
 import { enqueueEvent } from '../services/offlineQueue';
-import { v4 as uuidv4 } from 'uuid';
-import crypto from 'crypto-js';
+import CryptoJS from 'crypto-js';
 import { useAlert } from '../contexts/AlertContext';
+import 'react-native-get-random-values';
+import { v4 as uuidv4 } from 'uuid';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 interface ScanPassengerScreenProps {
   navigation: any;
 }
 
-type ScanMode = 'nfc' | 'qr';
-
 export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
   navigation,
 }) => {
-  const [scanMode, setScanMode] = useState<ScanMode>('nfc');
   const currentTrip = useTripStore((state: any) => state.currentTrip);
   const incrementScanned = useTripStore((state: any) => state.incrementScanned);
   const { scannedCount, onboardCount, absentCount } = useTripStore();
   const { showAlert } = useAlert();
 
+  // Track recently scanned passengers to prevent duplicates
+  const recentScansRef = useRef<Map<string, number>>(new Map());
+  const DUPLICATE_SCAN_THRESHOLD = 5000; // 5 seconds
+
   const hashCode = (code: string): string => {
     return CryptoJS.SHA256(CryptoJS.enc.Utf8.parse(code.trim())).toString();
+  };
+
+  // Clean up old scans every minute
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const scans = recentScansRef.current;
+      
+      for (const [hash, timestamp] of scans.entries()) {
+        if (now - timestamp > DUPLICATE_SCAN_THRESHOLD) {
+          scans.delete(hash);
+        }
+      }
+    }, 60000); // Clean up every minute
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // ✅ Detect scan method based on code format
+  const detectScanMethod = (code: string): 'card' | 'qrcode' => {
+    // QR codes typically start with a prefix or are longer
+    // Adjust this logic based on your actual code formats
+    if (code.startsWith('TRFVCV') || code.length > 80) {
+      return 'qrcode';
+    }
+    // Assume NFC card for shorter codes or different format
+    return 'card';
   };
 
   const processPassenger = async (code: string) => {
@@ -51,13 +76,10 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
       return;
     }
 
-    // ✅ DEBUG: Log the raw scanned code
     console.log('═══════════════════════════════');
     console.log('📱 Raw scanned code:', code);
     console.log('📱 Code length:', code.length);
     console.log('📱 Code type:', typeof code);
-
-    // ✅ DEBUG: Log current trip ID
     console.log('🎫 Current trip ID:', currentTrip.trip.tripId);
 
     // Hash the code
@@ -65,16 +87,26 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
     console.log('🔐 Generated hash:', codeHash);
     console.log('🔐 Hash length:', codeHash.length);
 
-    // ✅ DEBUG: Check what's in the database
-    // const allPassengers = await getAllManifestForTrip(currentTrip.trip.tripId);
-    // console.log('📋 Total passengers in manifest:', allPassengers?.length || 0);
-    // if (allPassengers && allPassengers.length > 0) {
-    //   console.log('📋 First passenger hash:', allPassengers[0].uniqueCodeHash);
-    //   console.log('📋 All hashes in manifest:');
-    //   allPassengers.forEach((p: any, i: number) => {
-    //     console.log(`   ${i + 1}. ${p.uniqueCodeHash}`);
-    //   });
-    // }
+    // ✅ Detect which scan method was used
+    const  scanMethod = detectScanMethod(code);
+    console.log('📡 Detected scan method:', scanMethod);
+
+    // Check for duplicate scan
+    const now = Date.now();
+    const lastScanTime = recentScansRef.current.get(codeHash);
+    
+    if (lastScanTime && (now - lastScanTime) < DUPLICATE_SCAN_THRESHOLD) {
+      const secondsAgo = Math.round((now - lastScanTime) / 1000);
+      console.log(`⏭️ Duplicate scan detected (scanned ${secondsAgo}s ago)`);
+      Vibration.vibrate([0, 100, 100, 100, 100, 100]); // Triple short vibration
+      
+      showAlert({
+        title: 'Already Scanned',
+        message: `This passenger was scanned ${secondsAgo} seconds ago.\n\nPlease wait before scanning again.`,
+        type: 'warning',
+      });
+      return;
+    }
 
     // Look up passenger
     const passenger = await lookupPassenger(currentTrip.trip.tripId, codeHash);
@@ -114,20 +146,23 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
       return;
     }
 
-    // Record scan
+    // Record this scan to prevent duplicates
+    recentScansRef.current.set(codeHash, now);
+
+    // Record scan event with detected method
     await enqueueEvent({
       eventId: uuidv4(),
       memberId: passenger.memberId,
       customerId: passenger.customerId,
       status: 'onboard',
-      operation: scanMode === 'nfc' ? 'card' : 'qrcode',
+      operation: scanMethod, // ✅ Now uses 'card' or 'qrcode' based on detection
       scannedAt: new Date().toISOString(),
     });
 
     incrementScanned('onboard');
     Vibration.vibrate(100);
 
-    // ✅ Success alert
+    // Success alert
     showAlert({
       title: 'Success ✓',
       message: `Passenger boarded successfully${
@@ -202,13 +237,10 @@ export const ScanPassengerScreen: React.FC<ScanPassengerScreenProps> = ({
         </Card>
       </View>
 
-      {/* Scanner */}
+      {/* Scanner - No mode prop needed, both work simultaneously */}
       <ScannerView
-        mode={scanMode}
         onScan={processPassenger}
-        onModeChange={setScanMode}
         enabled={true}
-        showModeSwitch={true}
       />
     </SafeAreaView>
   );

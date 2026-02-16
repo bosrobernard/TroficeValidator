@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   RefreshControl,
@@ -19,10 +18,14 @@ import { getQueueCount } from '../services/offlineQueue';
 import { BootstrapResponse } from '../types';
 import { useAlert } from '../contexts/AlertContext';
 import { useDeviceStore } from '../store/deviceStore';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import BackgroundSyncService from '../services/backgroundSyncService';
 
 interface DashboardScreenProps {
   navigation: any;
 }
+
+const api = new ValidatorApi('https://trofice.com/api/validator');
 
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   navigation,
@@ -31,34 +34,121 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [deviceInfo, setDeviceInfo] = useState<BootstrapResponse | null>(null);
   const [pendingEvents, setPendingEvents] = useState(0);
-  const api = new ValidatorApi('https://trofice.com/api/validator');
   const { showAlert } = useAlert();
-  const setBootstrapData = useDeviceStore(state => state.setBootstrapData); // ✅ Get setter
-  const clearBootstrapData = useDeviceStore(state => state.clearBootstrapData); // ✅ Get clearer
+  const setBootstrapData = useDeviceStore(state => state.setBootstrapData);
+  const clearBootstrapData = useDeviceStore(state => state.clearBootstrapData);
+
+  // Background polling ref - runs independently of screen focus
+  const pollingIntervalRef = useRef<number | null>(null);
+  const POLLING_INTERVAL = 5000; // Poll every 5 seconds
+  const backgroundSync = BackgroundSyncService.getInstance();
 
   useEffect(() => {
     loadDashboard();
+
+    // Start background polling - will continue even when screen is not focused
+    startBackgroundPolling();
+
+    // Listen for background sync completion
+    const unsubscribeSync = backgroundSync.addListener(() => {
+      loadPendingCount();
+    });
+
+    return () => {
+      // Only stop polling when component unmounts completely
+      stopBackgroundPolling();
+      unsubscribeSync();
+    };
   }, []);
+
+  // Background polling - independent of screen focus
+  const startBackgroundPolling = () => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+    }
+
+    pollingIntervalRef.current = setInterval(() => {
+      loadPendingCount();
+    }, POLLING_INTERVAL) as unknown as number;
+
+    console.log(
+      `⏰ [Dashboard] Background polling started - ${POLLING_INTERVAL / 1000}s`,
+    );
+  };
+
+  const stopBackgroundPolling = () => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+      console.log('⏸️ [Dashboard] Background polling stopped');
+    }
+  };
+
+  const loadPendingCount = async () => {
+    try {
+      const count = await getQueueCount();
+      setPendingEvents(count);
+    } catch (error) {
+      console.error('❌ Failed to load pending count:', error);
+    }
+  };
 
   const loadDashboard = async () => {
     try {
       const result = await api.bootstrap();
-      console.log('results---', result);
 
       if (result.success) {
+        // ✅ Normalize the response with default values for missing fields
         const normalized = {
-          ...result.data,
           device: {
-            ...result.data.device,
+            deviceId: result.data.device.deviceId,
             name: result.data.device.name ?? null,
+            deviceType: result.data.device.deviceType,
             assignedBatchId: result.data.device.assignedBatchId ?? null,
             assignedVehicleId: result.data.device.assignedVehicleId ?? null,
+            status: result.data.device.status ?? 'ACTIVE', // ✅ Default to ACTIVE if missing
           },
+          sync: result.data.sync ?? {
+            // ✅ Provide defaults if sync is missing
+            maxBatchSize: 50,
+            recommendedIntervalSeconds: 60,
+          },
+          serverTime: result.data.serverTime ?? new Date().toISOString(), // ✅ Use current time if missing
         };
 
         setDeviceInfo(normalized);
         setBootstrapData(normalized);
+
+        console.log('✅ [Dashboard] Bootstrap successful, token saved');
       } else {
+        // ✅ Handle token expiration or authentication errors
+        if (
+          result.message.toLowerCase().includes('auth') ||
+          result.message.toLowerCase().includes('token') ||
+          result.message.toLowerCase().includes('unauthorized') ||
+          result.message.toLowerCase().includes('re-login')
+        ) {
+          showAlert({
+            title: 'Session Expired',
+            message:
+              'Your session has expired. Please re-provision the device.',
+            type: 'error',
+            buttons: [
+              {
+                text: 'Re-provision',
+                onPress: async () => {
+                  stopBackgroundPolling();
+                  backgroundSync.disable();
+                  await clearProvisioning();
+                  clearBootstrapData();
+                  navigation.replace('Provisioning');
+                },
+              },
+            ],
+          });
+          return;
+        }
+
         showAlert({
           title: 'Error',
           message: result.message,
@@ -66,8 +156,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         });
       }
 
-      const count = await getQueueCount();
-      setPendingEvents(count);
+      await loadPendingCount();
     } catch (error: any) {
       showAlert({
         title: 'Error',
@@ -99,8 +188,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
           text: 'Logout',
           style: 'destructive',
           onPress: async () => {
-            await clearProvisioning();
-            clearBootstrapData(); // ✅ Clear global state
+            stopBackgroundPolling();
+            backgroundSync.disable();
+            await clearProvisioning(); // ✅ This now clears both credentials and token
+            clearBootstrapData();
             navigation.replace('Provisioning');
           },
         },
@@ -108,182 +199,185 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
     });
   };
 
-  if (loading) {
-    return <Loader visible={true} text="Loading dashboard..." />;
-  }
-
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            tintColor={Colors.primary}
-          />
-        }
-      >
-        {/* Header */}
-        <LinearGradient
-          colors={[`${Colors.primary}20`, 'transparent']}
-          style={styles.headerGradient}
+      {loading ? (
+        <Loader visible={true} text="Loading dashboard..." />
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={Colors.primary}
+            />
+          }
         >
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.greeting}>Trofice Validator</Text>
-              <Text style={styles.deviceId}>
-                {deviceInfo?.device.deviceId || 'N/A'}
-              </Text>
+          <LinearGradient
+            colors={[`${Colors.primary}20`, 'transparent']}
+            style={styles.headerGradient}
+          >
+            <View style={styles.header}>
+              <View>
+                <Text style={styles.greeting}>Trofice Validator</Text>
+                <Text style={styles.deviceId}>
+                  {deviceInfo?.device.deviceId || 'N/A'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.logoutButton}
+                onPress={handleLogout}
+              >
+                <Feather name="log-out" size={24} color={Colors.error} />
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity
-              style={styles.logoutButton}
-              onPress={handleLogout}
-            >
-              <Feather name="log-out" size={24} color={Colors.error} />
-            </TouchableOpacity>
-          </View>
-        </LinearGradient>
+          </LinearGradient>
 
-        {/* Device Status Card */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <View style={styles.iconBadge}>
-              <Feather name="shield" size={24} color={Colors.primary} />
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.iconBadge}>
+                <Feather name="shield" size={24} color={Colors.primary} />
+              </View>
+              <Text style={styles.cardTitle}>Device Status</Text>
             </View>
-            <Text style={styles.cardTitle}>Device Status</Text>
-          </View>
 
-          <View style={styles.statusRow}>
-            <Text style={styles.statusLabel}>Status</Text>
-            <View
-              style={[
-                styles.statusBadge,
-                deviceInfo?.device.status === 'ACTIVE'
-                  ? styles.activeBadge
-                  : styles.revokedBadge,
-              ]}
-            >
+            <View style={styles.statusRow}>
+              <Text style={styles.statusLabel}>Status</Text>
               <View
                 style={[
-                  styles.statusDot,
+                  styles.statusBadge,
                   deviceInfo?.device.status === 'ACTIVE'
-                    ? styles.activeDot
-                    : styles.revokedDot,
-                ]}
-              />
-              <Text
-                style={[
-                  styles.statusText,
-                  deviceInfo?.device.status === 'ACTIVE'
-                    ? styles.activeText
-                    : styles.revokedText,
+                    ? styles.activeBadge
+                    : styles.revokedBadge,
                 ]}
               >
-                {deviceInfo?.device.status || 'Unknown'}
-              </Text>
+                <View
+                  style={[
+                    styles.statusDot,
+                    deviceInfo?.device.status === 'ACTIVE'
+                      ? styles.activeDot
+                      : styles.revokedDot,
+                  ]}
+                />
+                <Text
+                  style={[
+                    styles.statusText,
+                    deviceInfo?.device.status === 'ACTIVE'
+                      ? styles.activeText
+                      : styles.revokedText,
+                  ]}
+                >
+                  {deviceInfo?.device.status || 'Unknown'}
+                </Text>
+              </View>
             </View>
-          </View>
 
-          <View style={styles.statusRow}>
-            <Text style={styles.statusLabel}>Type</Text>
-            <Text style={styles.statusValue}>
-              {deviceInfo?.device.deviceType || 'N/A'}
-            </Text>
-          </View>
-
-          {deviceInfo?.device.name && (
             <View style={styles.statusRow}>
-              <Text style={styles.statusLabel}>Name</Text>
-              <Text style={styles.statusValue}>{deviceInfo.device.name}</Text>
-            </View>
-          )}
-
-          {/* ✅ Show Assigned Batch/Terminal */}
-          {deviceInfo?.device.assignedBatchId && (
-            <View style={styles.statusRow}>
-              <Text style={styles.statusLabel}>Terminal ID</Text>
+              <Text style={styles.statusLabel}>Type</Text>
               <Text style={styles.statusValue}>
-                {deviceInfo.device.assignedBatchId}
+                {deviceInfo?.device.deviceType || 'N/A'}
               </Text>
             </View>
-          )}
-        </View>
 
-        {/* Sync Status */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <View style={styles.iconBadge}>
-              <Feather name="refresh-cw" size={24} color={Colors.info} />
-            </View>
-            <Text style={styles.cardTitle}>Sync Status</Text>
+            {deviceInfo?.device.name && (
+              <View style={styles.statusRow}>
+                <Text style={styles.statusLabel}>Name</Text>
+                <Text style={styles.statusValue}>{deviceInfo.device.name}</Text>
+              </View>
+            )}
+
+            {deviceInfo?.device.assignedBatchId && (
+              <View style={styles.statusRow}>
+                <Text style={styles.statusLabel}>Terminal ID</Text>
+                <Text style={styles.statusValue}>
+                  {deviceInfo.device.assignedBatchId}
+                </Text>
+              </View>
+            )}
           </View>
 
-          <View style={styles.syncInfo}>
-            <View style={styles.syncStat}>
-              <Text style={styles.syncNumber}>{pendingEvents}</Text>
-              <Text style={styles.syncLabel}>Pending Events</Text>
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.iconBadge}>
+                <Feather name="refresh-cw" size={24} color={Colors.info} />
+              </View>
+              <Text style={styles.cardTitle}>Sync Status</Text>
+              <View style={styles.liveIndicator}>
+                <View style={styles.liveDot} />
+                <Text style={styles.liveText}>Live</Text>
+              </View>
             </View>
-            <View style={styles.divider} />
-            <View style={styles.syncStat}>
-              <Text style={styles.syncNumber}>
-                {deviceInfo?.sync.recommendedIntervalSeconds || 60}s
-              </Text>
-              <Text style={styles.syncLabel}>Sync Interval</Text>
+
+            <View style={styles.syncInfo}>
+              <View style={styles.syncStat}>
+                <Text style={styles.syncNumber}>{pendingEvents}</Text>
+                <Text style={styles.syncLabel}>Pending Events</Text>
+              </View>
+              <View style={styles.divider} />
+              <View style={styles.syncStat}>
+                <Text style={styles.syncNumber}>
+                  {deviceInfo?.sync.recommendedIntervalSeconds || 60}s
+                </Text>
+                <Text style={styles.syncLabel}>Sync Interval</Text>
+              </View>
             </View>
+
+            {pendingEvents > 0 && (
+              <Button
+                title="Sync Now"
+                onPress={() => navigation.navigate('Sync')}
+                variant="outline"
+                size="sm"
+                style={styles.syncButton}
+                icon={
+                  <Feather
+                    name="upload-cloud"
+                    size={18}
+                    color={Colors.primary}
+                  />
+                }
+              />
+            )}
           </View>
 
-          {pendingEvents > 0 && (
-            <Button
-              title="Sync Now"
-              onPress={() => navigation.navigate('Sync')}
-              variant="outline"
-              size="sm"
-              style={styles.syncButton}
-              icon={
-                <Feather name="upload-cloud" size={18} color={Colors.primary} />
-              }
-            />
-          )}
-        </View>
-
-        {/* Quick Actions */}
-        <View style={styles.actionsContainer}>
-          <TouchableOpacity
-            style={styles.actionCard}
-            onPress={() => navigation.navigate('TripSelect')}
-          >
-            <LinearGradient
-              colors={[Colors.primary, Colors.primaryDark]}
-              style={styles.actionGradient}
+          <View style={styles.actionsContainer}>
+            <TouchableOpacity
+              style={styles.actionCard}
+              onPress={() => navigation.navigate('TripSelect')}
             >
-              <Feather name="map" size={32} color={Colors.textPrimary} />
-              <Text style={styles.actionTitle}>Start Trip</Text>
-              <Text style={styles.actionSubtitle}>
-                {deviceInfo?.device.assignedBatchId
-                  ? 'Load your assigned terminal'
-                  : 'Select and download trip manifest'}
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
+              <LinearGradient
+                colors={[Colors.primary, Colors.primaryDark]}
+                style={styles.actionGradient}
+              >
+                <Feather name="map" size={32} color={Colors.textPrimary} />
+                <Text style={styles.actionTitle}>Start Trip</Text>
+                <Text style={styles.actionSubtitle}>
+                  {deviceInfo?.device.assignedBatchId
+                    ? 'Load your assigned terminal'
+                    : 'Select and download trip manifest'}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.actionCard}
-            onPress={() => navigation.navigate('Sync')}
-          >
-            <View style={[styles.actionGradient, styles.secondaryAction]}>
-              <Feather name="database" size={32} color={Colors.primary} />
-              <Text style={styles.actionTitle}>Sync Data</Text>
-              <Text style={styles.actionSubtitle}>Upload pending scans</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity
+              style={styles.actionCard}
+              onPress={() => navigation.navigate('Sync')}
+            >
+              <View style={[styles.actionGradient, styles.secondaryAction]}>
+                <Feather name="database" size={32} color={Colors.primary} />
+                <Text style={styles.actionTitle}>Sync Data</Text>
+                <Text style={styles.actionSubtitle}>Upload pending scans</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
 
-        {/* Server Time */}
-        <Text style={styles.serverTime}>
-          Server Time: {new Date(deviceInfo?.serverTime || '').toLocaleString()}
-        </Text>
-      </ScrollView>
+          <Text style={styles.serverTime}>
+            Server Time:{' '}
+            {new Date(deviceInfo?.serverTime || '').toLocaleString()}
+          </Text>
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 };
@@ -346,6 +440,28 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     color: Colors.textPrimary,
+    flex: 1,
+  },
+  liveIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: `${Colors.success}20`,
+    borderRadius: 12,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.success,
+  },
+  liveText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: Colors.success,
+    textTransform: 'uppercase',
   },
   statusRow: {
     flexDirection: 'row',
