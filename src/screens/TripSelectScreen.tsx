@@ -21,9 +21,8 @@ interface TripSelectScreenProps {
   navigation: any;
 }
 
-  const api = new ValidatorApi('https://trofice.com/api/validator');
+const api = new ValidatorApi('https://trofice.com/api/validator');
 
-  
 export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
   navigation,
 }) => {
@@ -35,13 +34,29 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
   const { showAlert } = useAlert();
   const backgroundSync = BackgroundSyncService.getInstance();
 
+  // ✅ Whenever currentTrip changes (including on first mount if already loaded),
+  //    make sure background sync service always has the latest trip context.
+  useEffect(() => {
+    if (currentTrip) {
+      backgroundSync.setTripContext(
+        currentTrip.trip.tripId,
+        currentTrip.manifestVersion,
+      );
+      console.log(
+        `🗺️ [TripSelect] Trip context set: ${currentTrip.trip.tripId}`,
+      );
+    } else {
+      backgroundSync.setTripContext(null);
+    }
+  }, [currentTrip?.trip?.tripId, currentTrip?.manifestVersion]);
+
   // Auto-refresh manifest every 30 seconds when there's an active trip
   useEffect(() => {
     if (!currentTrip) return;
 
     const intervalId = setInterval(() => {
       refreshManifestInBackground();
-    }, 30000); // 30 seconds
+    }, 30000);
 
     console.log('⏰ [TripSelect] Auto-refresh manifest enabled (30s interval)');
 
@@ -55,7 +70,7 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
       clearTimeout(timeoutId);
       console.log('⏸️ [TripSelect] Auto-refresh manifest disabled');
     };
-  }, [currentTrip?.trip?.tripId]); // Only re-run when trip ID changes
+  }, [currentTrip?.trip?.tripId]);
 
   const refreshManifestInBackground = async () => {
     if (!currentTrip) return;
@@ -79,7 +94,6 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
           manifestResult.message,
         );
 
-        // ✅ If authentication error, don't retry in background
         if (
           manifestResult.message.toLowerCase().includes('auth') ||
           manifestResult.message.toLowerCase().includes('token')
@@ -87,14 +101,13 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
           console.log(
             '⏸️ [Background] Auth error detected, stopping auto-refresh',
           );
-          return; // Stop trying
+          return;
         }
         return;
       }
 
       console.log('✅ [Background] Manifest updated, checking for changes...');
 
-      // Compare and update only changed records
       const changes = await updateManifestDiff(
         manifestResult.data.trip.tripId,
         manifestResult.data.manifestVersion,
@@ -104,20 +117,17 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
       if (changes.updated > 0 || changes.added > 0 || changes.removed > 0) {
         console.log(`✅ [Background] Manifest changes applied:`, changes);
 
-        // Update the current trip with new manifest version
+        // ✅ Update store AND keep background sync context in sync with new manifestVersion
         setCurrentTrip(manifestResult.data);
+        backgroundSync.setTripContext(
+          manifestResult.data.trip.tripId,
+          manifestResult.data.manifestVersion,
+        );
 
-        // Notify user of significant changes (optional - can be removed if too noisy)
         if (changes.updated > 0) {
           console.log(
             `📢 ${changes.updated} passenger(s) payment status updated`,
           );
-          // Uncomment to show alert to user:
-          // showAlert({
-          //   title: 'Manifest Updated',
-          //   message: `${changes.updated} passenger(s) updated`,
-          //   type: 'info',
-          // });
         }
       } else {
         console.log('ℹ️ [Background] No changes detected in manifest');
@@ -143,7 +153,6 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
     setLoadingMessage('Fetching trip information...');
 
     try {
-      // Step 1: Get current trip ID for the batch
       console.log('📥 Fetching current trip for batch:', assignedBatchId);
       const tripResult = await api.getCurrentTripByBatchId(assignedBatchId);
 
@@ -171,7 +180,6 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
       const tripId = tripResult.data._id;
       console.log('✅ Got trip ID:', tripId);
 
-      // Step 2: Download trip manifest
       setLoadingMessage('Downloading manifest...');
       console.log('📥 Downloading trip manifest for Trip ID:', tripId);
       const manifestResult = await api.downloadTripPack(tripId);
@@ -198,7 +206,6 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
 
       console.log('✅ Trip manifest downloaded:', manifestResult.data);
 
-      // Save to SQLite
       setLoadingMessage('Saving manifest...');
       await saveTripPack(
         manifestResult.data.trip.tripId,
@@ -207,11 +214,21 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
         manifestResult.data.manifest,
       );
 
-      // Update store
+      // ✅ Update store
       setCurrentTrip(manifestResult.data);
 
-      // Start background sync with current trip
+      // ✅ Set trip context on background sync service so the timer can sync immediately
+      backgroundSync.setTripContext(
+        manifestResult.data.trip.tripId,
+        manifestResult.data.manifestVersion,
+      );
+
+      // ✅ Enable and start background sync now that we have a valid trip
       backgroundSync.enable();
+
+      console.log(
+        `✅ [TripSelect] Background sync started for trip: ${manifestResult.data.trip.tripId}`,
+      );
 
       showAlert({
         title: 'Success',
@@ -275,14 +292,18 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
         return;
       }
 
-      // Update manifest with differential changes
       const changes = await updateManifestDiff(
         manifestResult.data.trip.tripId,
         manifestResult.data.manifestVersion,
         manifestResult.data.manifest,
       );
 
+      // ✅ Update store and sync context together
       setCurrentTrip(manifestResult.data);
+      backgroundSync.setTripContext(
+        manifestResult.data.trip.tripId,
+        manifestResult.data.manifestVersion,
+      );
 
       showAlert({
         title: 'Manifest Refreshed',
@@ -326,7 +347,6 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
       </View>
 
       <View style={styles.content}>
-        {/* Current Trip Status */}
         {currentTrip && (
           <View style={styles.activeTripCard}>
             <View style={styles.activeTripHeader}>
@@ -367,7 +387,6 @@ export const TripSelectScreen: React.FC<TripSelectScreenProps> = ({
           </View>
         )}
 
-        {/* Download New Trip */}
         {!currentTrip && (
           <>
             <View style={styles.iconContainer}>

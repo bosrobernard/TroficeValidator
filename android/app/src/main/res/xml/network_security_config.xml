@@ -3,6 +3,14 @@
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
+            <certificates src="user" />
         </trust-anchors>
     </base-config>
+
+     <domain-config cleartextTrafficPermitted="true">
+        <!-- Replace 'insecure.example.com' with your actual domain -->
+        <domain includeSubdomains="true">173.212.220.230</domain>
+        <!-- Add more domains as needed -->
+    </domain-config>
+
 </network-security-config>

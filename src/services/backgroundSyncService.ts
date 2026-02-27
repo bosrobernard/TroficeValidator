@@ -12,11 +12,15 @@ class BackgroundSyncService {
   private syncTimerRef: number | null = null;
   private isSyncing: boolean = false;
   private isEnabled: boolean = true;
-  private syncInterval: number = 60000; // Default 60 seconds
+  private syncInterval: number = 10000; // Default 60 seconds
   private api: ValidatorApi;
   private appStateSubscription: any = null;
   private currentAppState: AppStateStatus = AppState.currentState;
   private listeners: Set<() => void> = new Set();
+
+  // ✅ Store trip context internally so the timer always has access
+  private currentTripId: string | null = null;
+  private manifestVersion: string | undefined = undefined;
 
   private constructor() {
     this.api = new ValidatorApi('https://trofice.com/api/validator');
@@ -28,6 +32,19 @@ class BackgroundSyncService {
       BackgroundSyncService.instance = new BackgroundSyncService();
     }
     return BackgroundSyncService.instance;
+  }
+
+  // ✅ Call this whenever the active trip changes
+  setTripContext(tripId: string | null, manifestVersion?: string) {
+    this.currentTripId = tripId;
+    this.manifestVersion = manifestVersion;
+    console.log(
+      `🗺️ [BackgroundSync] Trip context updated - tripId: ${tripId}, manifestVersion: ${manifestVersion}`,
+    );
+  }
+
+  getTripContext(): { tripId: string | null; manifestVersion?: string } {
+    return { tripId: this.currentTripId, manifestVersion: this.manifestVersion };
   }
 
   // Add listener for sync completion
@@ -72,6 +89,10 @@ class BackgroundSyncService {
     }
   }
 
+  getInterval(): number {
+    return this.syncInterval / 1000;
+  }
+
   enable() {
     this.isEnabled = true;
     this.start();
@@ -91,6 +112,7 @@ class BackgroundSyncService {
 
     this.stop(); // Clear any existing timer
 
+    // ✅ Timer uses internal trip context — no need to pass tripId
     this.syncTimerRef = setInterval(() => {
       this.performSync();
     }, this.syncInterval) as unknown as number;
@@ -120,13 +142,26 @@ class BackgroundSyncService {
     this.start();
   }
 
-  async performSync(currentTripId?: string, manifestVersion?: string): Promise<{
+  // ✅ Uses internal trip context; accepts overrides for forceSyncNow()
+  async performSync(
+    tripIdOverride?: string,
+    manifestVersionOverride?: string,
+  ): Promise<{
     success: boolean;
     synced?: number;
     rejected?: number;
   }> {
     if (this.isSyncing) {
       console.log('⚠️ [BackgroundSync] Already syncing, skipping');
+      return { success: false };
+    }
+
+    // ✅ Fall back to internally stored context if no override provided
+    const tripId = tripIdOverride ?? this.currentTripId;
+    const manifest = manifestVersionOverride ?? this.manifestVersion;
+
+    if (!tripId) {
+      console.log('⚠️ [BackgroundSync] No trip ID available, skipping');
       return { success: false };
     }
 
@@ -137,18 +172,15 @@ class BackgroundSyncService {
         return { success: true, synced: 0, rejected: 0 };
       }
 
-      if (!currentTripId) {
-        console.log('⚠️ [BackgroundSync] No trip ID provided, skipping');
-        return { success: false };
-      }
-
       this.isSyncing = true;
-      console.log(`🔄 [BackgroundSync] Syncing ${count} events...`);
+      console.log(
+        `🔄 [BackgroundSync] Syncing ${count} events for trip: ${tripId}`,
+      );
 
       const pending = await getPendingEvents();
       const result = await this.api.syncEvents({
-        tripId: currentTripId,
-        manifestVersion: manifestVersion,
+        tripId,
+        manifestVersion: manifest,
         events: pending,
       });
 
@@ -172,7 +204,6 @@ class BackgroundSyncService {
         `✅ [BackgroundSync] Completed - ${syncedIds.length} synced, ${rejected} rejected`,
       );
 
-      // Notify listeners
       this.notifyListeners();
 
       return { success: true, synced: syncedIds.length, rejected };

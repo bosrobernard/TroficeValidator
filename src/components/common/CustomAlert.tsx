@@ -23,6 +23,8 @@ interface CustomAlertProps {
   type?: 'success' | 'error' | 'warning' | 'info';
   buttons?: AlertButton[];
   onDismiss?: () => void;
+  autoDismiss?: boolean; // ✅ Added
+  duration?: number; // ✅ Added
 }
 
 export const CustomAlert: React.FC<CustomAlertProps> = ({
@@ -32,6 +34,8 @@ export const CustomAlert: React.FC<CustomAlertProps> = ({
   type = 'info',
   buttons = [{text: 'OK'}],
   onDismiss,
+  autoDismiss = false, // ✅ Added with default
+  duration = 3000, // ✅ Added with default
 }) => {
   const [scaleAnim] = React.useState(new Animated.Value(0));
   const [opacityAnim] = React.useState(new Animated.Value(0));
@@ -108,7 +112,8 @@ export const CustomAlert: React.FC<CustomAlertProps> = ({
           style={styles.backdrop}
           activeOpacity={1}
           onPress={() => {
-            if (buttons.some(b => b.style === 'cancel')) {
+            // ✅ Only allow backdrop dismiss if not auto-dismissing
+            if (!autoDismiss && buttons.some(b => b.style === 'cancel')) {
               const cancelButton = buttons.find(b => b.style === 'cancel');
               if (cancelButton) handleButtonPress(cancelButton);
             }
@@ -134,38 +139,49 @@ export const CustomAlert: React.FC<CustomAlertProps> = ({
           {/* Message */}
           <Text style={styles.message}>{message}</Text>
 
-          {/* Buttons */}
-          <View style={styles.buttonContainer}>
-            {buttons.map((button, index) => {
-              const isDestructive = button.style === 'destructive';
-              const isCancel = button.style === 'cancel';
-              const isPrimary =
-                buttons.length === 1 || (!isDestructive && !isCancel);
+          {/* ✅ Show auto-dismiss indicator OR buttons */}
+          {autoDismiss ? (
+            <View style={styles.autoCloseContainer}>
+              <View style={styles.autoCloseIndicator}>
+                <Feather name="clock" size={16} color={Colors.textSecondary} />
+                <Text style={styles.autoCloseText}>
+                  Closing in {(duration / 1000).toFixed(0)}s
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.buttonContainer}>
+              {buttons.map((button, index) => {
+                const isDestructive = button.style === 'destructive';
+                const isCancel = button.style === 'cancel';
+                const isPrimary =
+                  buttons.length === 1 || (!isDestructive && !isCancel);
 
-              return (
-                <TouchableOpacity
-                  key={index}
-                  style={[
-                    styles.button,
-                    isPrimary && styles.primaryButton,
-                    isCancel && styles.cancelButton,
-                    isDestructive && styles.destructiveButton,
-                  ]}
-                  onPress={() => handleButtonPress(button)}
-                  activeOpacity={0.7}>
-                  <Text
+                return (
+                  <TouchableOpacity
+                    key={index}
                     style={[
-                      styles.buttonText,
-                      isPrimary && styles.primaryButtonText,
-                      isCancel && styles.cancelButtonText,
-                      isDestructive && styles.destructiveButtonText,
-                    ]}>
-                    {button.text}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+                      styles.button,
+                      isPrimary && styles.primaryButton,
+                      isCancel && styles.cancelButton,
+                      isDestructive && styles.destructiveButton,
+                    ]}
+                    onPress={() => handleButtonPress(button)}
+                    activeOpacity={0.7}>
+                    <Text
+                      style={[
+                        styles.buttonText,
+                        isPrimary && styles.primaryButtonText,
+                        isCancel && styles.cancelButtonText,
+                        isDestructive && styles.destructiveButtonText,
+                      ]}>
+                      {button.text}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
         </Animated.View>
       </Animated.View>
     </Modal>
@@ -257,5 +273,24 @@ const styles = StyleSheet.create({
   },
   destructiveButtonText: {
     color: Colors.textPrimary,
+  },
+  // ✅ New styles for auto-dismiss
+  autoCloseContainer: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  autoCloseIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    backgroundColor: `${Colors.textSecondary}10`,
+    borderRadius: 20,
+  },
+  autoCloseText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontWeight: '500',
   },
 });

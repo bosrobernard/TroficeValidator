@@ -1,4 +1,4 @@
-import React, {createContext, useContext, useState, ReactNode} from 'react';
+import React, {createContext, useContext, useState, ReactNode, useRef, useEffect} from 'react';
 import {CustomAlert} from '../components/common/CustomAlert';
 
 interface AlertButton {
@@ -12,6 +12,8 @@ interface AlertOptions {
   message: string;
   type?: 'success' | 'error' | 'warning' | 'info';
   buttons?: AlertButton[];
+  autoDismiss?: boolean; // ✅ Auto-dismiss flag
+  duration?: number; // ✅ Duration in milliseconds (default 3000)
 }
 
 interface AlertContextType {
@@ -23,21 +25,57 @@ const AlertContext = createContext<AlertContextType | undefined>(undefined);
 
 export const AlertProvider: React.FC<{children: ReactNode}> = ({children}) => {
   const [visible, setVisible] = useState(false);
-  const [alertOptions, setAlertOptions] = useState<AlertOptions | null>(null); // ✅ Changed to null
+  const [alertOptions, setAlertOptions] = useState<AlertOptions | null>(null);
+  // ✅ Fixed: Use ReturnType<typeof setTimeout> instead of NodeJS.Timeout
+  const autoDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ✅ Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autoDismissTimer.current) {
+        clearTimeout(autoDismissTimer.current);
+      }
+    };
+  }, []);
 
   const showAlert = (options: AlertOptions) => {
+    // Clear any existing timer
+    if (autoDismissTimer.current) {
+      clearTimeout(autoDismissTimer.current);
+      autoDismissTimer.current = null;
+    }
+
     setAlertOptions(options);
     setVisible(true);
+
+    // ✅ Set auto-dismiss timer if enabled
+    if (options.autoDismiss) {
+      const duration = options.duration || 3000;
+      autoDismissTimer.current = setTimeout(() => {
+        hideAlert();
+      }, duration);
+    }
   };
 
   const hideAlert = () => {
+    // Clear timer when manually dismissing
+    if (autoDismissTimer.current) {
+      clearTimeout(autoDismissTimer.current);
+      autoDismissTimer.current = null;
+    }
+    
     setVisible(false);
+    
+    // ✅ Clear alert options after animation completes
+    setTimeout(() => {
+      setAlertOptions(null);
+    }, 300);
   };
 
   return (
     <AlertContext.Provider value={{showAlert, hideAlert}}>
       {children}
-      {alertOptions && ( // ✅ Only render when alertOptions exists
+      {alertOptions && (
         <CustomAlert
           visible={visible}
           title={alertOptions.title}
@@ -45,6 +83,8 @@ export const AlertProvider: React.FC<{children: ReactNode}> = ({children}) => {
           type={alertOptions.type}
           buttons={alertOptions.buttons}
           onDismiss={hideAlert}
+          autoDismiss={alertOptions.autoDismiss} // ✅ Pass to CustomAlert
+          duration={alertOptions.duration} // ✅ Pass to CustomAlert
         />
       )}
     </AlertContext.Provider>

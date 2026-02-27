@@ -317,7 +317,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               <View style={styles.divider} />
               <View style={styles.syncStat}>
                 <Text style={styles.syncNumber}>
-                  {deviceInfo?.sync.recommendedIntervalSeconds || 60}s
+                  {deviceInfo?.sync?.recommendedIntervalSeconds || 60}s
                 </Text>
                 <Text style={styles.syncLabel}>Sync Interval</Text>
               </View>

@@ -40,12 +40,11 @@ export class ValidatorApi {
 
   private async request<T>(
     opts: RequestOpts,
-    retryCount = 0, // ✅ Add retry counter
+    retryCount = 0,
   ): Promise<ApiResult<T> | { notModified: true }> {
     const credentials = await getProvisioning();
     const bearerToken = await getBearerToken();
 
-    // Use the API base, but strip /validator if useValidatorBase is false
     let base = credentials?.apiBase || this.apiBase;
     if (opts.useValidatorBase === false) {
       base = base.replace(/\/validator$/, '');
@@ -58,34 +57,24 @@ export class ValidatorApi {
       deviceId: credentials?.deviceId,
       apiBase: base,
       skipAuth: opts.skipAuth,
-      retryCount, // ✅ Log retry count
+      retryCount,
     });
 
-    // ✅ Check for bearer token if authentication is required
     if (!opts.skipAuth && !bearerToken) {
-      console.log(
-        '❌ [API] No bearer token available - authentication required',
-      );
+      console.log('❌ [API] No bearer token available - authentication required');
 
-      // ✅ Only retry once to prevent infinite loop
       if (retryCount === 0 && credentials?.deviceId && credentials?.deviceKey) {
         console.log('🔄 [API] Attempting to re-bootstrap (retry 1/1)...');
         const bootstrapResult = await this.bootstrap();
 
         if (bootstrapResult.success) {
           console.log('✅ [API] Re-bootstrap successful, retrying request');
-          // Token is now saved, retry the original request with incremented counter
           return this.request(opts, retryCount + 1);
         } else {
-          console.error(
-            '❌ [API] Re-bootstrap failed:',
-            bootstrapResult.message,
-          );
+          console.error('❌ [API] Re-bootstrap failed:', bootstrapResult.message);
         }
       } else if (retryCount > 0) {
-        console.error(
-          '❌ [API] Already retried once, preventing infinite loop',
-        );
+        console.error('❌ [API] Already retried once, preventing infinite loop');
       }
 
       return {
@@ -100,7 +89,6 @@ export class ValidatorApi {
       ...(opts.headers || {}),
     };
 
-    // ✅ Add Bearer token to Authorization header if not skipped
     if (!opts.skipAuth && bearerToken) {
       headers['authorization'] = `Bearer ${bearerToken}`;
       console.log('🔑 [API] Using Bearer token authentication');
@@ -110,10 +98,9 @@ export class ValidatorApi {
       headers['if-none-match'] = opts.ifNoneMatch;
     }
 
-    // ✅ Log request details
     console.log('📡 [API] Making request:', {
       method: opts.method || 'GET',
-      url: url,
+      url,
       path: opts.path,
     });
 
@@ -170,8 +157,6 @@ export class ValidatorApi {
     }
   }
 
-  // ✅ Updated bootstrap method - sends credentials in payload and saves token
-  // ✅ Updated bootstrap method - handles token specially
   async bootstrap(): Promise<ApiResult<BootstrapResponse>> {
     const credentials = await getProvisioning();
 
@@ -180,13 +165,19 @@ export class ValidatorApi {
       return { success: false, message: 'Device credentials not found' };
     }
 
-    // ✅ Make the request manually to access the full response including token
     const url = joinUrl(
       credentials?.apiBase || this.apiBase,
       '/device/bootstrap/login',
     );
 
+    console.log('🌐 [API] Bootstrap URL:', url);
+    console.log('🌐 [API] Device ID:', credentials.deviceId);
+    console.log('🌐 [API] API Key length:', credentials.deviceKey.length);
+
     try {
+      console.log('📡 [API] Starting bootstrap fetch request...');
+
+      // ✅ Using standard fetch instead of unsafeFetch
       const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -198,6 +189,8 @@ export class ValidatorApi {
         }),
       });
 
+      console.log('✅ [API] Bootstrap fetch completed, status:', res.status);
+
       const json = await res.json();
       console.log('Bootstrap response:', json);
 
@@ -208,21 +201,17 @@ export class ValidatorApi {
         };
       }
 
-      // ✅ Token is at the top level of the response
       if (json.token) {
         try {
           console.log('💾 [API] Saving bearer token...');
           await saveBearerToken(json.token);
           console.log('✅ [API] Bearer token saved successfully');
 
-          // ✅ Verify it was actually saved
           const verifyToken = await getBearerToken();
           if (verifyToken === json.token) {
             console.log('✅ [API] Token verified in storage');
           } else {
-            console.error(
-              '❌ [API] Token verification failed - token in storage does not match',
-            );
+            console.error('❌ [API] Token verification failed');
             return {
               success: false,
               message: 'Failed to save authentication token',
@@ -243,10 +232,12 @@ export class ValidatorApi {
         };
       }
 
-      // ✅ Return the data portion
       return { success: true, data: json.data as BootstrapResponse };
     } catch (error: any) {
       console.error('❌ [API] Bootstrap error:', error);
+      console.error('❌ [API] Error name:', error.name);
+      console.error('❌ [API] Error message:', error.message);
+      console.error('❌ [API] Error stack:', error.stack);
       return {
         success: false,
         message: error.message || 'Bootstrap failed',
@@ -259,7 +250,7 @@ export class ValidatorApi {
     etag?: string,
   ): Promise<ApiResult<TripPackResponse> | { notModified: true }> {
     return await this.request<TripPackResponse>({
-      path: `/trips/${tripId}/v2/pack`,
+      path: `/trips/${tripId}/pack`,
       ifNoneMatch: etag,
     });
   }
@@ -284,7 +275,8 @@ export class ValidatorApi {
     batchId: string,
   ): Promise<ApiResult<CurrentTripResponse>> {
     const r = await this.request<CurrentTripResponse>({
-      path: `/${batchId}/trip`,
+      path: `/validator/${batchId}/trip`,
+      useValidatorBase: false,
     });
     if ('notModified' in r) {
       return { success: false, message: 'Unexpected 304' };

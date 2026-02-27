@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,12 +12,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { Colors } from '../utils/colors';
 import { Button } from '../components/common/Button';
 import { Loader } from '../components/common/Loader';
-import { ValidatorApi } from '../api/validatorApi';
-import {
-  getPendingEvents,
-  markEventsSynced,
-  getQueueCount,
-} from '../services/offlineQueue';
+import { getQueueCount } from '../services/offlineQueue';
 import { useTripStore } from '../store/tripStore';
 import { format } from 'date-fns';
 import { useAlert } from '../contexts/AlertContext';
@@ -28,25 +23,36 @@ interface SyncScreenProps {
   navigation: any;
 }
 
-  const api = new ValidatorApi('https://trofice.com/api/validator');
-
-
 export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
   const [loading, setLoading] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [syncResults, setSyncResults] = useState<any>(null);
   const [isAutoSyncEnabled, setIsAutoSyncEnabled] = useState(true);
-  const [nextAutoSync, setNextAutoSync] = useState<Date | null>(null);
+  // ✅ Track exact time of last sync start so countdown is accurate
+  const [lastSyncStartedAt, setLastSyncStartedAt] = useState<number>(Date.now());
+  const [secondsUntilSync, setSecondsUntilSync] = useState<number>(0);
 
   const currentTrip = useTripStore((state: any) => state.currentTrip);
   const bootstrapData = useDeviceStore(state => state.bootstrapData);
   const recommendedInterval =
-    bootstrapData?.sync?.recommendedIntervalSeconds || 60;
+    bootstrapData?.sync?.recommendedIntervalSeconds || 10;
   const { showAlert } = useAlert();
 
   const backgroundSync = BackgroundSyncService.getInstance();
-  const updateTimerRef = useRef<number | null>(null);
+  const countdownTimerRef = useRef<number | null>(null);
+
+  // ✅ Wire up trip context to background service whenever currentTrip changes
+  useEffect(() => {
+    if (currentTrip) {
+      backgroundSync.setTripContext(
+        currentTrip.trip.tripId,
+        currentTrip.manifestVersion,
+      );
+    } else {
+      backgroundSync.setTripContext(null);
+    }
+  }, [currentTrip]);
 
   useEffect(() => {
     loadPendingCount();
@@ -57,13 +63,13 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
       backgroundSync.enable();
     }
 
-    // Listen for sync completion to update UI
+    // ✅ Listen for sync completion — update UI and reset countdown
     const unsubscribe = backgroundSync.addListener(() => {
       loadPendingCount();
       setLastSync(new Date());
+      setLastSyncStartedAt(Date.now()); // ✅ Reset countdown origin
     });
 
-    // Update next sync countdown every second
     startCountdownTimer();
 
     return () => {
@@ -75,6 +81,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
   useEffect(() => {
     if (isAutoSyncEnabled) {
       backgroundSync.enable();
+      setLastSyncStartedAt(Date.now()); // ✅ Reset countdown when re-enabled
     } else {
       backgroundSync.disable();
     }
@@ -82,23 +89,32 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
 
   useEffect(() => {
     backgroundSync.setInterval(recommendedInterval);
+    setLastSyncStartedAt(Date.now()); // ✅ Reset countdown when interval changes
   }, [recommendedInterval]);
 
-  const startCountdownTimer = () => {
-    if (updateTimerRef.current) {
-      clearInterval(updateTimerRef.current);
+  // ✅ Real countdown — calculates actual seconds remaining based on last sync time
+  const startCountdownTimer = useCallback(() => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
     }
 
-    updateTimerRef.current = setInterval(() => {
-      // Force re-render to update countdown
-      setNextAutoSync(new Date(Date.now() + recommendedInterval * 1000));
+    countdownTimerRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - lastSyncStartedAt) / 1000);
+      const remaining = Math.max(0, recommendedInterval - elapsed);
+      setSecondsUntilSync(remaining);
     }, 1000) as unknown as number;
-  };
+  }, [lastSyncStartedAt, recommendedInterval]);
+
+  // Restart countdown timer whenever its dependencies change
+  useEffect(() => {
+    startCountdownTimer();
+    return () => stopCountdownTimer();
+  }, [startCountdownTimer]);
 
   const stopCountdownTimer = () => {
-    if (updateTimerRef.current) {
-      clearInterval(updateTimerRef.current);
-      updateTimerRef.current = null;
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
     }
   };
 
@@ -107,6 +123,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
     setPendingCount(count);
   };
 
+  // ✅ Simplified — uses backgroundSync.forceSyncNow() instead of duplicating api logic
   const handleManualSync = async () => {
     if (!currentTrip) {
       showAlert({
@@ -131,46 +148,34 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
     setSyncResults(null);
 
     try {
-      const pending = await getPendingEvents();
-      const result = await api.syncEvents({
-        tripId: currentTrip.trip.tripId,
-        manifestVersion: currentTrip.manifestVersion,
-        events: pending,
-      });
+      const result = await backgroundSync.forceSyncNow(
+        currentTrip.trip.tripId,
+        currentTrip.manifestVersion,
+      );
 
       if (!result.success) {
         showAlert({
           title: 'Sync Failed',
-          message: result.message,
+          message: 'Failed to sync events. Please try again.',
           type: 'error',
         });
         return;
       }
 
-      const syncedIds = result.data.results
-        .filter(r => r.accepted || r.duplicate)
-        .map(r => r.eventId!)
-        .filter(Boolean);
-
-      await markEventsSynced(syncedIds);
       await loadPendingCount();
       setLastSync(new Date());
-      setSyncResults(result.data);
+      setLastSyncStartedAt(Date.now()); // ✅ Reset countdown after manual sync too
 
-      const rejected = result.data.results.filter(
-        r => !r.accepted && !r.duplicate,
-      );
-
-      if (rejected.length === 0) {
+      if ((result.rejected ?? 0) === 0) {
         showAlert({
           title: 'Success',
-          message: `Successfully synced ${result.data.processed} events!`,
+          message: `Successfully synced ${result.synced} events!`,
           type: 'success',
         });
       } else {
         showAlert({
           title: 'Partially Synced',
-          message: `${syncedIds.length} events synced, ${rejected.length} rejected. Check results for details.`,
+          message: `${result.synced} events synced, ${result.rejected} rejected.`,
           type: 'warning',
         });
       }
@@ -186,11 +191,11 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
   };
 
   const toggleAutoSync = () => {
-    setIsAutoSyncEnabled(!isAutoSyncEnabled);
+    setIsAutoSyncEnabled(prev => !prev);
     if (!isAutoSyncEnabled) {
       showAlert({
         title: 'Auto-Sync Enabled',
-        message: `Events will sync automatically every ${recommendedInterval} seconds in the background`,
+        message: `Events will sync automatically every ${recommendedInterval} seconds`,
         type: 'success',
       });
     } else {
@@ -208,10 +213,11 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
     return str.substring(0, maxLength) + '...';
   };
 
+  // ✅ Real countdown display using actual seconds remaining
   const getNextSyncCountdown = (): string => {
     if (!isAutoSyncEnabled) return '';
-    const seconds = recommendedInterval;
-    return `in ~${seconds}s`;
+    if (secondsUntilSync <= 0) return 'syncing soon...';
+    return `in ${secondsUntilSync}s`;
   };
 
   return (
@@ -459,7 +465,6 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({ navigation }) => {
   );
 };
 
-// ... (styles remain the same)
 const styles = StyleSheet.create({
   container: {
     flex: 1,

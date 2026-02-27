@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Alert,
+  ActivityIndicator,
+  Platform,
+} from 'react-native';
 import {
   Camera,
   useCameraDevice,
@@ -13,6 +20,9 @@ import { saveProvisioning } from '../services/deviceStorage';
 import { Feather } from '@react-native-vector-icons/feather';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAlert } from '../contexts/AlertContext';
+import { testNetworkConnection } from '../utils/networkTest';
+import { ValidatorApi } from '../api/validatorApi';
+import NetInfo from '@react-native-community/netinfo';
 
 interface ProvisioningScreenProps {
   navigation: any; // Changed from onProvisioned callback
@@ -93,22 +103,113 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
       setProcessingQR(true);
       setLoading(true);
       setScanning(false);
-      
+
       console.log('QR code scanned:', data);
       const provisioning = JSON.parse(data);
       console.log('Parsed provisioning data:', provisioning);
+
+      // console.log('🧪 Running comprehensive network diagnostics...');
+      // const networkTest = await testNetworkConnection();
+      // console.log('📊 Network test summary:', networkTest.message);
+      // console.log(
+      //   '📊 Full details:',
+      //   JSON.stringify(networkTest.details, null, 2),
+      // );
+
+      // Helper to format each row
+      // const fmt = (
+      //   label: string,
+      //   t: {
+      //     success: boolean;
+      //     status?: number;
+      //     error?: string;
+      //     responseData?: any;
+      //     duration?: number;
+      //   },
+      // ) => {
+      //   const icon = t.success ? '✅' : '❌';
+      //   const status = t.status ? ` [${t.status}]` : '';
+      //   const time = t.duration ? ` ${t.duration}ms` : '';
+      //   const err =
+      //     !t.success && t.error ? `\n     └─ ${t.error.slice(0, 60)}` : '';
+      //   const resp =
+      //     t.success && t.responseData
+      //       ? `\n     └─ ${JSON.stringify(t.responseData).slice(0, 80)}`
+      //       : '';
+      //   return `${icon} ${label}${status}${time}${err}${resp}`;
+      // };
+
+      // const d = networkTest.details;
+
+      // showAlert({
+      //   title: `Network Diagnostics (${
+      //     networkTest.message.split(' ')[0]
+      //   } passed)`,
+      //   message: [
+      //     fmt('Google', d.googleTest),
+      //     fmt('JSONPlaceholder', d.jsonPlaceholderTest),
+      //     fmt('Doronpay.com', d.doronpayDomainTest),
+      //     fmt('Trofice.com', d.troficeDomainTest),
+      //     fmt('HTTP (port 80)', d.httpTest),
+      //     fmt('Trofice API (HTTPS)', d.domainTest),
+      //     fmt('Trofice IP', d.ipTest),
+      //     fmt('DoronPay Login API', d.doronpayLoginTest),
+      //     fmt('DNS Resolution', d.dnsTest),
+      //     fmt('Direct Port 443', d.portTest),
+      //     fmt('Doronpay Direct IP', d.doronpayIpTest), // ✅ correct key
+      //     fmt('Doronpay HTTP (no SSL)', d.httpDoronpayTest), // ✅ correct key
+      //     fmt('GitHub HTTPS', d.githubTest), // ✅ correct key
+      //     fmt('Cloudflare 1.1.1.1', d.cloudflareTest), // ✅ correct key
+      //     fmt('Donkomi (CF Proxied)', d.donkomiTest), // ✅ Add this
+      //   ].join('\n\n'),
+      //   type: networkTest.success ? 'info' : 'error',
+      // });
+
+      // if (!networkTest.success) {
+      //   throw new Error(
+      //     'All network tests failed. Check device network settings.',
+      //   );
+      // }
 
       if (!provisioning?.deviceId || !provisioning?.deviceKey) {
         throw new Error('Invalid provisioning QR code');
       }
 
+      // ✅ Override apiBase to use IP address for testing
+      const testApiBase = 'https://trofice.com/api/validator';
+      console.log('🧪 [Test] Using IP address:', testApiBase);
+
+      // After network test, add this
+      console.log('📱 Device Info:');
+      console.log('Platform:', Platform.OS);
+      console.log('Version:', Platform.Version);
+
+      // Try to get network info
+
+      const netInfo = await NetInfo.fetch();
+      console.log('🌐 Network Info:', {
+        type: netInfo.type,
+        isConnected: netInfo.isConnected,
+        isInternetReachable: netInfo.isInternetReachable,
+        details: netInfo.details,
+      });
+
       await saveProvisioning({
         deviceId: provisioning.deviceId,
         deviceKey: provisioning.deviceKey,
-        apiBase: provisioning.apiBase,
+        apiBase: testApiBase, // ✅ Use IP instead of domain
       });
 
-      // ✅ Replace Alert.alert with showAlert
+      // ✅ Immediately bootstrap to get the token
+      const api = new ValidatorApi(testApiBase);
+      const bootstrapResult = await api.bootstrap();
+
+      if (!bootstrapResult.success) {
+        throw new Error(`Bootstrap failed: ${bootstrapResult.message}`);
+      }
+
+      console.log('✅ Device provisioned and bootstrapped successfully');
+
       showAlert({
         title: 'Success',
         message: 'Device provisioned successfully!',
@@ -121,7 +222,6 @@ export const ProvisioningScreen: React.FC<ProvisioningScreenProps> = ({
         ],
       });
     } catch (error: any) {
-      // ✅ Replace Alert.alert with showAlert
       showAlert({
         title: 'Error',
         message: error.message || 'Invalid QR code',
